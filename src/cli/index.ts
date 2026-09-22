@@ -4,6 +4,7 @@ import { Command } from "commander";
 import fs from "node:fs/promises";
 import path from "node:path";
 import chalk from "chalk";
+import packageJson from "../../package.json";
 
 const program = new Command();
 
@@ -122,6 +123,7 @@ async function init() {
 program
   .name("mcp-handler")
   .description("Initialize MCP route handler in your Next.js project")
+  .version(packageJson.version)
   .action(init);
 
 program.parse();
