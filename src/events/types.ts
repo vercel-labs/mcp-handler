@@ -1,0 +1,146 @@
+import type {
+  AuthInfo,
+  StandardSchemaWithJSON,
+} from "@modelcontextprotocol/server";
+
+/** @experimental The MCP Events proposal is not a finalized specification. */
+export interface ExperimentalMcpEventContext {
+  /** Stable, application-defined identity, including its tenant/issuer scope. */
+  principal: string;
+  authInfo: AuthInfo;
+  signal: AbortSignal;
+}
+
+/** @experimental A webhook event exposed through events/list. */
+export interface ExperimentalMcpEventDefinition {
+  name: string;
+  description?: string;
+  /** A non-transforming schema: arguments are part of subscription identity. */
+  inputSchema: StandardSchemaWithJSON;
+  payloadSchema: StandardSchemaWithJSON;
+  /** Authorize the specific filters, not just access to the event catalog. */
+  authorize(
+    args: Record<string, unknown>,
+    context: ExperimentalMcpEventContext,
+  ): boolean | Promise<boolean>;
+}
+
+/** @experimental Identity passed to storage; never supplied by the client. */
+export interface ExperimentalMcpSubscriptionKey {
+  id: string;
+  principal: string;
+  name: string;
+  arguments: Record<string, unknown>;
+  url: string;
+}
+
+/** @experimental A verified subscription to persist and activate atomically. */
+export interface ExperimentalMcpWebhookSubscription
+  extends ExperimentalMcpSubscriptionKey {
+  secret: string;
+  /** The granted expiry. Null requires durable state across restarts. */
+  refreshBefore: string | null;
+  /** Replay request, not a persisted safe delivery watermark. */
+  cursor: string | null;
+  maxAgeMs?: number;
+}
+
+/** @experimental Safe webhook diagnostics, never raw endpoint responses. */
+export type ExperimentalMcpWebhookFailure =
+  | "connection_refused"
+  | "timeout"
+  | "tls_error"
+  | "http_4xx"
+  | "http_5xx"
+  | "challenge_failed";
+
+/** @experimental State returned by the application's durable delivery system. */
+export interface ExperimentalMcpSubscriptionState {
+  /** Safe watermark, never ahead of unacknowledged deliveries; null for no replay. */
+  cursor: string | null;
+  truncated: boolean;
+  deliveryStatus?: {
+    active: boolean;
+    lastDeliveryAt?: string;
+    lastError: ExperimentalMcpWebhookFailure | null;
+    failedSince?: string;
+    throttled?: boolean;
+    retryAfterMs?: number;
+  };
+}
+
+/**
+ * @experimental Application-owned storage and lifecycle adapter.
+ *
+ * Methods must be atomic/idempotent per key across concurrent HTTP requests.
+ * Use an outbox or equivalent durable reconciliation for delivery activation and
+ * cancellation. A request-local Map or fire-and-forget task is not sufficient.
+ */
+export interface ExperimentalMcpSubscriptionStore {
+  /**
+   * Persist the verified grant and arrange delivery before resolving. Refresh
+   * updates the secret/expiry, resumes suspended work, and applies cursor replay
+   * without rewinding a live subscription. Enforce quotas here. Protect secrets
+   * at rest and retain state for the entire granted lifetime.
+   */
+  upsert(
+    subscription: ExperimentalMcpWebhookSubscription,
+    context: ExperimentalMcpEventContext,
+  ): Promise<ExperimentalMcpSubscriptionState>;
+  /** Stop delivery and durably arrange cleanup. False means no matching key. */
+  remove(
+    key: ExperimentalMcpSubscriptionKey,
+    context: ExperimentalMcpEventContext,
+  ): Promise<boolean>;
+}
+
+/**
+ * @experimental Adapter to the application's webhook delivery system.
+ *
+ * This package makes no outbound HTTP requests. The adapter must enforce its
+ * egress policy on every request (including DNS resolution), disable redirects,
+ * and bound timeouts/response sizes. Cache consent per (principal, url), rate
+ * limit failed verifications, and honor the abort signal.
+ */
+export interface ExperimentalMcpWebhookDelivery {
+  /**
+   * Prove endpoint consent using a signed verification challenge or another
+   * mechanism allowed by the draft before any subscription is activated. Use a
+   * vetted Standard Webhooks implementation for signing; true must never mean
+   * merely that the URL was reachable. The delivery worker behind the store must
+   * sign events/controls, enforce expiry/revocation, and retry durably.
+   */
+  verifyEndpoint(
+    target: ExperimentalMcpSubscriptionKey & { secret: string },
+    context: ExperimentalMcpEventContext,
+  ): Promise<
+    | { verified: true }
+    | { verified: false; reason: ExperimentalMcpWebhookFailure }
+  >;
+}
+
+/** @experimental Options for experimental_registerMcpEvents. */
+export interface ExperimentalMcpEventsOptions {
+  /** Resolve only from verified AuthInfo; do not use clientId as an end-user ID. */
+  getPrincipal(authInfo: AuthInfo): string | Promise<string>;
+  /** Use a resolver when the catalog depends on the authenticated account. */
+  events:
+    | readonly ExperimentalMcpEventDefinition[]
+    | ((
+        context: ExperimentalMcpEventContext,
+      ) =>
+        | readonly ExperimentalMcpEventDefinition[]
+        | Promise<readonly ExperimentalMcpEventDefinition[]>);
+  subscriptions: ExperimentalMcpSubscriptionStore;
+  delivery: ExperimentalMcpWebhookDelivery;
+  ttl?: {
+    /** @default 60000 */
+    minMs?: number;
+    /** @default 3600000 */
+    defaultMs?: number;
+    /** @default 86400000 */
+    maxMs?: number;
+    /** Enable only with durable no-expiry storage/delivery. @default false */
+    allowNoExpiry?: boolean;
+  };
+}

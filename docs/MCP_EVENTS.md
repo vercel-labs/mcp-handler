@@ -1,0 +1,176 @@
+# Experimental MCP Events
+
+`experimental_registerMcpEvents` adds the webhook control methods from the
+[MCP Events design sketch](https://github.com/modelcontextprotocol/experimental-ext-triggers-events/blob/28ec35e905daa241f019981e2836b4a02f1c0368/docs/design-sketch-proposal.md)
+to an existing MCP handler. The proposal is experimental; this API may change
+alongside it.
+
+```typescript
+import {
+  createMcpHandler,
+  experimental_registerMcpEvents,
+  withMcpAuth,
+  type ExperimentalMcpEventDefinition,
+} from "mcp-handler";
+import { z } from "zod";
+import {
+  subscriptionStore,
+  durableWebhookDelivery,
+  principalFromVerifiedAuth,
+  canReadProject,
+  verifyToken,
+} from "./events-backend";
+
+const issueCreated: ExperimentalMcpEventDefinition = {
+  name: "issue.created",
+  description: "A new issue is created in a project.",
+  inputSchema: z.strictObject({ project_id: z.string() }),
+  payloadSchema: z.object({ id: z.string(), title: z.string() }),
+  authorize: (args, { principal }) =>
+    canReadProject(principal, args.project_id as string),
+};
+
+const handler = createMcpHandler((server) => {
+  experimental_registerMcpEvents(server, {
+    events: [issueCreated],
+    getPrincipal: principalFromVerifiedAuth,
+    subscriptions: subscriptionStore,
+    delivery: durableWebhookDelivery,
+  });
+});
+
+export const POST = withMcpAuth(handler, verifyToken, { required: true });
+```
+
+`./events-backend` is application code, not an included adapter. It supplies
+verified identity, authorization, durable subscription storage and delivery
+infrastructure. The helper provides protocol registration and validation; it
+does not create a database, send webhooks, or start background timers.
+
+## Methods and capabilities
+
+The existing MCP endpoint advertises `capabilities.events: {}` and serves:
+
+| Method               | Behavior                                                                                                                                                         |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `events/list`        | Returns the authenticated account's catalog with `delivery: ["webhook"]`, input schemas and payload schemas.                                                     |
+| `events/subscribe`   | Validates and authorizes arguments, derives subscription identity, verifies callback consent, and delegates atomic creation/refresh to the subscription adapter. |
+| `events/unsubscribe` | Resolves the same principal/callback/event/arguments key and delegates cancellation.                                                                             |
+
+All methods use the same `/mcp` route (or whichever route hosts the handler).
+There is no extra inbound event route on this server: webhook delivery is an
+outbound operation to the client's callback. Poll and push are not advertised
+or implemented. The helper does not add anything to `tools/list`; a client that
+wants model-callable subscription tools must build those from `events/list`.
+
+The catalog is returned as a single page, without `nextCursor`. Requests with a
+catalog cursor are rejected. For account-specific discovery, supply a resolver:
+
+```typescript
+events: async (context) => {
+  return await catalogForPrincipal(context.principal);
+},
+```
+
+The resolver runs within each authenticated request. A static array intentionally
+advertises the same event definitions to every authenticated principal. Each
+event's required `authorize` callback separately checks the requested filters
+before verification or storage changes. Use non-transforming Standard Schemas:
+defaults, stripping fields, coercion or other argument transformations are
+rejected when they change the input, because arguments are part of identity.
+
+## Principal and subscription identity
+
+`getPrincipal` receives the verified `AuthInfo` provided by `withMcpAuth`. Return
+a stable, tenant/issuer-scoped user or app identifier. For example, derive it from
+the issuer, tenant and subject established by your token verifier. Do not derive
+it from event arguments or use the OAuth `clientId` as an end-user identity; many
+users can share one OAuth client. The helper rejects missing/expired auth and
+empty principals, and requires authentication for catalog discovery too.
+
+The server derives `sub_<sha256>` from the canonical JSON tuple
+`[principal, delivery.url, name, arguments]`. Object key order does not affect
+identity. The callback URL is used as supplied, after validation. Changing any
+identity component creates a different subscription. Changing the secret,
+requested TTL or replay cursor refreshes the same key. Subscription IDs are
+routing handles, never authorization grants. Namespace a shared storage adapter
+per logical MCP server so unrelated servers cannot mix their subscriptions.
+
+Unsubscribe accepts `name`, `arguments` and `delivery.url`, not a subscription
+ID. It remains available when an event disappears or its schema changes: cleanup
+uses the saved identity, not the current catalog. A missing subscription returns
+the draft's `-32011` error with `data.kind: "subscription"`.
+
+## Adapter contracts
+
+The exported types describe the required methods:
+
+| Adapter                            | Method                            | Required behavior                                                                                                                                                                                                                |
+| ---------------------------------- | --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ExperimentalMcpWebhookDelivery`   | `verifyEndpoint(target, context)` | Prove callback consent before activation. Return `{ verified: true }` only after a signed challenge succeeds or another verification mechanism allowed by the draft establishes consent; otherwise return a categorized failure. |
+| `ExperimentalMcpSubscriptionStore` | `upsert(subscription, context)`   | Atomically persist/refresh the verified subscription and durably arrange activation/reconciliation. Return `{ cursor, truncated, deliveryStatus? }` from the delivery system.                                                    |
+| `ExperimentalMcpSubscriptionStore` | `remove(key, context)`            | Stop delivery and durably arrange cleanup for that scoped key. Return false if it does not exist.                                                                                                                                |
+
+These can be two interfaces to the same durable backend. The store is a lifecycle
+adapter, not just a raw key/value database client: `upsert` must not commit a row
+and then launch an untracked asynchronous delivery task. Use a transactional
+outbox or equivalent recovery mechanism. Both create/refresh and cancellation
+must be atomic and idempotent under concurrent requests and backend retries.
+Requests can fail after a commit; a retry must converge on the same subscription.
+
+The application backend is responsible for:
+
+- Endpoint consent cached per `(principal, url)`, failed-verification rate limits,
+  and egress policy enforcement on every verification and delivery attempt,
+  including DNS resolution. Do not follow redirects; bound timeouts and response
+  sizes. The helper only validates HTTPS URL syntax and does not fetch the URL.
+- Standard Webhooks signing using a vetted implementation. Event deliveries need
+  `webhook-id`, `webhook-timestamp`, `webhook-signature` and
+  `X-MCP-Subscription-Id`. Re-sign each retry with a fresh timestamp; support
+  in-flight secret rotation and signed verification/gap/termination controls.
+- Event sources, filter matching, payload-schema validation and ongoing
+  authorization. Admission authorization alone does not authorize delivery after
+  access is revoked. Enforce quotas, expiry and cancellation in the worker.
+- Durable, bounded retries and acknowledgement handling. Stop retrying an event
+  on `410` or `413` without deleting its subscription. Keep cancelled delivery
+  work from becoming active after a delayed create/refresh.
+- Safe replay watermarks and gap reporting. `upsert` receives the requested
+  `cursor` (missing becomes null) and `maxAgeMs`. Return a safe watermark that
+  does not run ahead of unacknowledged events. For a live source without replay,
+  return `cursor: null`. Return `truncated: true` when resumption skipped events.
+- Secret protection at rest and redaction in backend logs. Adapter exceptions
+  and invalid return values become a generic protocol error. Explicit
+  `ProtocolError`s with the draft's codes retain their code and only fixed,
+  allowlisted diagnostic categories; endpoint response content is never returned.
+
+Adapters receive the verified auth context and an abort signal. Do not retain
+access tokens in subscription records or log them. Storage and delivery must
+outlive the HTTP handler: `createMcpHandler` creates a fresh `McpServer` per
+request, so a Map or timer inside its initializer cannot maintain subscriptions.
+Only consent established by the verifier is passed into `upsert`; the helper
+performs no partial subscription write before verification.
+
+## TTL and refresh
+
+By default, the server grants one hour, clamps requests to a one-minute minimum
+and one-day maximum, and does not grant no-expiry subscriptions. Configure this
+with `ttl: { minMs, defaultMs, maxMs, allowNoExpiry }`.
+
+An explicit `ttlMs: null` requests no expiry. The helper grants it only when
+`allowNoExpiry: true`; otherwise it grants the default finite TTL. Omitted TTLs
+and finite requests always receive finite grants, even when no expiry is enabled.
+Only enable no expiry when the backend persists subscriptions across restarts
+and provides sustained-failure cleanup. Storage must honor every granted expiry.
+
+The client renews a finite subscription by re-calling `events/subscribe` with the
+same identity before `refreshBefore`. The adapter updates expiry and secret,
+reactivates suspended delivery, and returns its latest cursor/status. No-expiry
+clients should still occasionally refresh for health checks and cursor progress.
+Webhook mode does not need push heartbeat notifications or a held-open connection.
+
+## Request telemetry
+
+`onEvent` continues to report requests, but `events/subscribe` telemetry replaces
+`params.delivery.secret` with `[REDACTED]`, including when the extension is not
+registered. The actual protocol request still receives the original secret.
+Application logging outside this hook needs equivalent redaction.

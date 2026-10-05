@@ -2,6 +2,19 @@
 export { default as createMcpHandler } from "./handler";
 export type { McpHandlerOptions, WebMcpOptions } from "./handler";
 
+export { experimental_registerMcpEvents } from "./events/register";
+export type {
+  ExperimentalMcpEventContext,
+  ExperimentalMcpEventDefinition,
+  ExperimentalMcpEventsOptions,
+  ExperimentalMcpSubscriptionKey,
+  ExperimentalMcpSubscriptionState,
+  ExperimentalMcpSubscriptionStore,
+  ExperimentalMcpWebhookDelivery,
+  ExperimentalMcpWebhookFailure,
+  ExperimentalMcpWebhookSubscription,
+} from "./events/types";
+
 /**
  * @deprecated Use withMcpAuth instead
  */

@@ -148,7 +148,7 @@ export function initializeMcpApiHandler(
             createEvent<McpRequestEvent>({
               type: "REQUEST_RECEIVED",
               method,
-              parameters: parsedBody,
+              parameters: redactEventSecret(parsedBody),
               status: "success",
             }),
           );
@@ -181,5 +181,24 @@ export function initializeMcpApiHandler(
       emitError(error instanceof Error ? error : new Error(String(error)));
       throw error;
     }
+  };
+}
+
+function redactEventSecret(body: object): object {
+  const request = body as { method?: unknown; params?: unknown };
+  if (
+    request.method !== "events/subscribe" ||
+    !request.params ||
+    typeof request.params !== "object"
+  )
+    return body;
+  const params = request.params as { delivery?: unknown };
+  if (!params.delivery || typeof params.delivery !== "object") return body;
+  return {
+    ...body,
+    params: {
+      ...params,
+      delivery: { ...params.delivery, secret: "[REDACTED]" },
+    },
   };
 }
