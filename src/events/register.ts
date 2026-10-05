@@ -11,6 +11,7 @@ import {
   unsubscribeParams,
   webhookFailures,
 } from "./schemas";
+import { canonical } from "./json";
 import type {
   ExperimentalMcpEventContext,
   ExperimentalMcpEventsOptions,
@@ -140,7 +141,12 @@ export function experimental_registerMcpEvents(
             "Arguments must match the event schema without transformation",
           );
         }
-        if ((await event.authorize(params.arguments, auth)) !== true) {
+        if (
+          (await event.authorize(params.arguments, {
+            principal: auth.principal,
+            signal: auth.signal,
+          })) !== true
+        ) {
           throw new ProtocolError(-32012, "Event arguments are not authorized");
         }
         const key = await subscriptionKey(
@@ -263,24 +269,6 @@ async function subscriptionKey(
       byte.toString(16).padStart(2, "0"),
     ).join("");
   return { id, principal, name, arguments: args, url };
-}
-
-function canonical(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
-  if (value !== null && typeof value === "object") {
-    return `{${Object.keys(value)
-      .sort()
-      .map(
-        (key) =>
-          `${JSON.stringify(key)}:${canonical(
-            (value as Record<string, unknown>)[key],
-          )}`,
-      )
-      .join(",")}}`;
-  }
-  const result = JSON.stringify(value);
-  if (result === undefined) throw new Error("Invalid JSON value");
-  return result;
 }
 
 async function safe<T>(run: () => Promise<T>): Promise<T> {

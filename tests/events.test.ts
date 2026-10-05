@@ -4,6 +4,7 @@ import { McpServer, ProtocolError } from "@modelcontextprotocol/server";
 import {
   createMcpHandler,
   experimental_registerMcpEvents,
+  experimental_validateMcpEventDelivery,
   withMcpAuth,
   type ExperimentalMcpEventDefinition,
   type ExperimentalMcpEventsOptions,
@@ -224,6 +225,10 @@ describe("experimental_registerMcpEvents", () => {
         secret,
         cursor: null,
       });
+      expect(app.authorize).toHaveBeenCalledWith(input().arguments, {
+        principal: "alice",
+        signal: expect.any(AbortSignal),
+      });
     },
   );
 
@@ -251,6 +256,28 @@ describe("experimental_registerMcpEvents", () => {
     expect(
       Date.parse(second.result.refreshBefore) - Date.now(),
     ).toBeLessThanOrEqual(120_000);
+  });
+
+  it("validates the persisted grant with the same policy after the request ends", async () => {
+    const app = setup();
+    const response = await app.rpc("events/subscribe", input());
+    const subscription = app.records.get(response.result.id);
+    const delivery = {
+      event: app.event,
+      subscription,
+      payload: { id: "issue-1" },
+    };
+    await expect(
+      experimental_validateMcpEventDelivery(delivery),
+    ).resolves.toBeUndefined();
+    app.authorize.mockResolvedValue(false);
+    await expect(
+      experimental_validateMcpEventDelivery(delivery),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    expect(app.authorize).toHaveBeenLastCalledWith(input().arguments, {
+      principal: "alice",
+      signal: expect.any(AbortSignal),
+    });
   });
 
   it("separates principals sharing an OAuth client ID and callback destinations", async () => {

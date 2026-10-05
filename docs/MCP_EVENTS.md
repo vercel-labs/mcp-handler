@@ -44,8 +44,8 @@ export const POST = withMcpAuth(handler, verifyToken, { required: true });
 
 `./events-backend` is application code, not an included adapter. It supplies
 verified identity, authorization, durable subscription storage and delivery
-infrastructure. The helper provides protocol registration and validation; it
-does not create a database, send webhooks, or start background timers.
+infrastructure. The helpers provide protocol registration and validation; they
+do not create a database, send webhooks, or start background timers.
 
 ## Methods and capabilities
 
@@ -75,7 +75,10 @@ events: async (context) => {
 The resolver runs within each authenticated request. A static array intentionally
 advertises the same event definitions to every authenticated principal. Each
 event's required `authorize` callback separately checks the requested filters
-before verification or storage changes. Use non-transforming Standard Schemas:
+before verification or storage changes. It receives `{ principal, signal }` so
+the same policy can run in a delivery worker without request credentials. The
+catalog and adapter callbacks still receive request `authInfo`. Use
+non-transforming Standard Schemas:
 defaults, stripping fields, coercion or other argument transformations are
 rejected when they change the input, because arguments are part of identity.
 
@@ -149,6 +152,82 @@ outlive the HTTP handler: `createMcpHandler` creates a fresh `McpServer` per
 request, so a Map or timer inside its initializer cannot maintain subscriptions.
 Only consent established by the verifier is passed into `upsert`; the helper
 performs no partial subscription write before verification.
+
+## Validating delivery in a worker
+
+Export the same event definition for your MCP handler and durable worker. Before
+each delivery attempt, load the current active subscription and validate the
+candidate data:
+
+```typescript
+import { experimental_validateMcpEventDelivery } from "mcp-handler";
+import {
+  issueCreated,
+  subscriptionStore,
+  durableWebhookDelivery,
+} from "./events-backend";
+
+async function deliverIssue(subscriptionId: string, payload: unknown) {
+  // Application-specific get(): return only current, active subscriptions.
+  const subscription = await subscriptionStore.get(subscriptionId);
+  if (!subscription) return;
+
+  await experimental_validateMcpEventDelivery({
+    event: issueCreated,
+    subscription,
+    payload,
+  });
+
+  // The durable backend gates dispatch against cancellation, then signs/sends.
+  await durableWebhookDelivery.send({ subscription, payload });
+}
+```
+
+`get()` and `send()` above are application APIs, not new required adapter methods.
+The helper returns `Promise<void>` and throws on failure. It checks the event
+name, a nonempty stored principal, and the granted `refreshBefore`; `null` permits
+no expiry, while missing or malformed deadlines fail closed. It validates the
+stored arguments and `payload` (the event's `data`, not the webhook envelope)
+against the current schemas, then invokes `event.authorize(arguments, {
+principal, signal })`. It rechecks expiry and an optional caller-provided `signal`
+after asynchronous validation and authorization. It does not transform data:
+coercion, stripping, defaults or mutation that change the JSON value are rejected
+so the worker can send the original validated payload. Use plain JSON values.
+
+The helper needs only `principal`, `name`, `arguments` and `refreshBefore` from
+the stored record; it does not need the original access token or signing secret.
+`authorize` must consult current application permissions and any durable grant
+restrictions maintained by your backend. Access-token expiry and subscription
+expiry are separate; a user does not need to stay logged in. The draft recommends
+periodic permission rechecks; it does not mandate token verification for every
+event. This helper invokes the policy on each call and does not cache its result.
+
+Known failures throw `ExperimentalMcpEventDeliveryError` with a fixed message and
+one of these `code` values:
+
+| Code                   | Meaning                                                                  |
+| ---------------------- | ------------------------------------------------------------------------ |
+| `invalid_subscription` | Missing record, invalid identity/arguments shape, or malformed deadline. |
+| `event_mismatch`       | The supplied definition belongs to another event name.                   |
+| `expired`              | The stored grant expired, including during an asynchronous check.        |
+| `invalid_arguments`    | Stored filters no longer match the current input schema unchanged.       |
+| `invalid_payload`      | Candidate data is not JSON matching the payload schema unchanged.        |
+| `forbidden`            | The authorization policy did not explicitly allow delivery.              |
+
+Do not send on any failure. Policy/schema exceptions and abort reasons propagate
+unchanged: a permissions-service outage is not proof of revocation. Let the
+durable worker decide retries and termination; this helper does not delete
+subscriptions or send signed termination controls.
+
+This validates a candidate against the supplied state, not against the database.
+It cannot detect a cancelled or suspended subscription in an old snapshot.
+The backend must coordinate active state, expiry, cancellation and dispatch,
+including on retries and after queue delays. It also owns matching source events
+to the subscription's filters: schema validation alone cannot prove that an
+issue belongs to an authorized project. Keep definitions and subscription
+records trusted, and do not mutate validated values before sending. The helper
+does not sign or verify webhook signatures, make network requests, or schedule
+work.
 
 ## TTL and refresh
 

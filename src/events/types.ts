@@ -3,12 +3,17 @@ import type {
   StandardSchemaWithJSON,
 } from "@modelcontextprotocol/server";
 
-/** @experimental The MCP Events proposal is not a finalized specification. */
-export interface ExperimentalMcpEventContext {
+/** @experimental Authorization shared by subscription requests and workers. */
+export interface ExperimentalMcpEventAuthorizationContext {
   /** Stable, application-defined identity, including its tenant/issuer scope. */
   principal: string;
-  authInfo: AuthInfo;
   signal: AbortSignal;
+}
+
+/** @experimental Request-only context; never persist its access token. */
+export interface ExperimentalMcpEventContext
+  extends ExperimentalMcpEventAuthorizationContext {
+  authInfo: AuthInfo;
 }
 
 /** @experimental A webhook event exposed through events/list. */
@@ -18,10 +23,13 @@ export interface ExperimentalMcpEventDefinition {
   /** A non-transforming schema: arguments are part of subscription identity. */
   inputSchema: StandardSchemaWithJSON;
   payloadSchema: StandardSchemaWithJSON;
-  /** Authorize the specific filters, not just access to the event catalog. */
+  /**
+   * Authorize these filters against current permissions and application-held
+   * grants. Used at subscribe time and by delivery validation, without a token.
+   */
   authorize(
     args: Record<string, unknown>,
-    context: ExperimentalMcpEventContext,
+    context: ExperimentalMcpEventAuthorizationContext,
   ): boolean | Promise<boolean>;
 }
 
@@ -44,6 +52,31 @@ export interface ExperimentalMcpWebhookSubscription
   cursor: string | null;
   maxAgeMs?: number;
 }
+
+/** @experimental Inputs for worker-side validation; no signing secret needed. */
+export interface ExperimentalMcpEventDeliveryValidationOptions {
+  event: ExperimentalMcpEventDefinition;
+  /** Load current, active state from trusted storage before each attempt. */
+  subscription:
+    | Pick<
+        ExperimentalMcpWebhookSubscription,
+        "principal" | "name" | "arguments" | "refreshBefore"
+      >
+    | null
+    | undefined;
+  /** The event's data, not the webhook envelope. Must already match its schema. */
+  payload: unknown;
+  signal?: AbortSignal;
+}
+
+/** @experimental Known validation failures, distinct from backend exceptions. */
+export type ExperimentalMcpEventDeliveryErrorCode =
+  | "invalid_subscription"
+  | "event_mismatch"
+  | "expired"
+  | "invalid_arguments"
+  | "invalid_payload"
+  | "forbidden";
 
 /** @experimental Safe webhook diagnostics, never raw endpoint responses. */
 export type ExperimentalMcpWebhookFailure =

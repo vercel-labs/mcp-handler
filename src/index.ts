@@ -3,8 +3,15 @@ export { default as createMcpHandler } from "./handler";
 export type { McpHandlerOptions, WebMcpOptions } from "./handler";
 
 export { experimental_registerMcpEvents } from "./events/register";
+export {
+  experimental_validateMcpEventDelivery,
+  ExperimentalMcpEventDeliveryError,
+} from "./events/validate-delivery";
 export type {
+  ExperimentalMcpEventAuthorizationContext,
   ExperimentalMcpEventContext,
+  ExperimentalMcpEventDeliveryErrorCode,
+  ExperimentalMcpEventDeliveryValidationOptions,
   ExperimentalMcpEventDefinition,
   ExperimentalMcpEventsOptions,
   ExperimentalMcpSubscriptionKey,
