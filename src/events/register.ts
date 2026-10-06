@@ -156,6 +156,11 @@ export function experimental_registerMcpEvents(
           params.delivery.url,
         );
         auth.signal.throwIfAborted();
+        const operationId = await options.subscriptions.prepare(key, auth);
+        if (typeof operationId !== "string" || !operationId.trim()) {
+          throw new Error("Invalid subscription operation");
+        }
+        auth.signal.throwIfAborted();
         const verification = await options.delivery.verifyEndpoint(
           { ...key, secret: params.delivery.secret },
           auth,
@@ -186,6 +191,7 @@ export function experimental_registerMcpEvents(
               : {}),
           },
           auth,
+          operationId,
         );
         const result = await subscriptionState["~standard"].validate(state);
         if (result.issues) throw new Error("Invalid subscription state");

@@ -8,6 +8,7 @@ import {
   withMcpAuth,
   type ExperimentalMcpEventDefinition,
   type ExperimentalMcpEventsOptions,
+  type ExperimentalMcpEventContext,
   type ExperimentalMcpWebhookSubscription,
 } from "../src/index";
 
@@ -26,11 +27,29 @@ const input = () => ({
 function setup(overrides: Partial<ExperimentalMcpEventsOptions> = {}) {
   // A fixture only. Production adapters must durably persist and schedule work.
   const records = new Map<string, ExperimentalMcpWebhookSubscription>();
-  const upsert = vi.fn(async (record: ExperimentalMcpWebhookSubscription) => {
-    records.set(record.id, record);
-    return { cursor: null as string | null, truncated: false };
+  const operations = new Map<string, string>();
+  const prepare = vi.fn(async (key: { id: string }) => {
+    const operation = crypto.randomUUID();
+    operations.set(key.id, operation);
+    return operation;
   });
-  const remove = vi.fn(async (key: { id: string }) => records.delete(key.id));
+  const upsert = vi.fn(
+    async (
+      record: ExperimentalMcpWebhookSubscription,
+      _context: ExperimentalMcpEventContext,
+      operationId: string,
+    ) => {
+      if (operations.get(record.id) !== operationId)
+        throw new Error("Subscription operation superseded");
+      records.set(record.id, record);
+      return { cursor: null as string | null, truncated: false };
+    },
+  );
+  const remove = vi.fn(async (key: { id: string }) => {
+    const pending = operations.delete(key.id);
+    const active = records.delete(key.id);
+    return pending || active;
+  });
   const verifyEndpoint = vi.fn(async () => ({ verified: true as const }));
   const authorize = vi.fn(
     async (args: Record<string, unknown>) => args.project === "ABC",
@@ -48,7 +67,7 @@ function setup(overrides: Partial<ExperimentalMcpEventsOptions> = {}) {
   const options: ExperimentalMcpEventsOptions = {
     getPrincipal: (auth) => String(auth.extra?.subject ?? ""),
     events: [event],
-    subscriptions: { upsert, remove },
+    subscriptions: { prepare, upsert, remove },
     delivery: { verifyEndpoint },
     ...overrides,
   };
@@ -133,6 +152,8 @@ function setup(overrides: Partial<ExperimentalMcpEventsOptions> = {}) {
     event,
     onEvent,
     upsert,
+    prepare,
+    operations,
     remove,
     verifyEndpoint,
     authorize,
@@ -193,6 +214,7 @@ describe("experimental_registerMcpEvents", () => {
       expect((await app.rpc(method, input(), null)).error.code).toBe(-32012);
       expect(app.upsert).not.toHaveBeenCalled();
       expect(app.remove).not.toHaveBeenCalled();
+      expect(app.prepare).not.toHaveBeenCalled();
     },
   );
 
@@ -219,6 +241,12 @@ describe("experimental_registerMcpEvents", () => {
       expect(response.result.cursor).toBeNull();
       expect(app.verifyEndpoint.mock.invocationCallOrder[0]).toBeLessThan(
         app.upsert.mock.invocationCallOrder[0],
+      );
+      expect(app.prepare.mock.invocationCallOrder[0]).toBeLessThan(
+        app.verifyEndpoint.mock.invocationCallOrder[0],
+      );
+      expect(app.upsert.mock.calls[0][2]).toBe(
+        await app.prepare.mock.results[0].value,
       );
       expect(app.upsert.mock.calls[0][0]).toMatchObject({
         principal: "alice",
@@ -257,6 +285,108 @@ describe("experimental_registerMcpEvents", () => {
       Date.parse(second.result.refreshBefore) - Date.now(),
     ).toBeLessThanOrEqual(120_000);
   });
+
+  it.each([false, true])(
+    "does not activate after unsubscribe during verification (modern=%s)",
+    async (modern) => {
+      const app = setup();
+      let finish!: () => void;
+      let started!: () => void;
+      const verifying = new Promise<void>((resolve) => {
+        started = resolve;
+      });
+      const consent = new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+      app.verifyEndpoint.mockImplementationOnce(async () => {
+        started();
+        await consent;
+        return { verified: true };
+      });
+      const pending = app.rpc("events/subscribe", input(), "alice", modern);
+      await verifying;
+      const stopped = await app.rpc(
+        "events/unsubscribe",
+        input(),
+        "alice",
+        modern,
+      );
+      expect(stopped.error).toBeUndefined();
+      finish();
+      expect((await pending).error.code).toBe(-32603);
+      expect(app.records.size).toBe(0);
+      expect(app.operations.size).toBe(0);
+    },
+  );
+
+  it("does not overwrite a newer refresh when older verification finishes late", async () => {
+    const app = setup();
+    const initial = await app.rpc("events/subscribe", input());
+    let finish!: () => void;
+    let started!: () => void;
+    const verifying = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const consent = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    app.verifyEndpoint.mockImplementationOnce(async () => {
+      started();
+      await consent;
+      return { verified: true };
+    });
+    const older = app.rpc("events/subscribe", { ...input(), ttlMs: 60_000 });
+    await verifying;
+    const newer = await app.rpc("events/subscribe", {
+      ...input(),
+      delivery: { ...input().delivery, secret: otherSecret },
+      ttlMs: 120_000,
+    });
+    expect(newer.result.id).toBe(initial.result.id);
+    finish();
+    expect((await older).error.code).toBe(-32603);
+    expect(app.records.get(initial.result.id)).toMatchObject({
+      secret: otherSecret,
+      refreshBefore: newer.result.refreshBefore,
+    });
+  });
+
+  it("preserves an active grant when replacement verification fails", async () => {
+    const app = setup();
+    const initial = await app.rpc("events/subscribe", input());
+    const grant = app.records.get(initial.result.id);
+    app.verifyEndpoint.mockRejectedValueOnce(new Error("Verification failed"));
+    const replacement = await app.rpc("events/subscribe", {
+      ...input(),
+      delivery: { ...input().delivery, secret: otherSecret },
+    });
+    expect(replacement.error.code).toBe(-32603);
+    expect(app.records.get(initial.result.id)).toEqual(grant);
+    expect(app.upsert).toHaveBeenCalledTimes(1);
+  });
+
+  it("enforces admission before network verification and redacts failures", async () => {
+    const app = setup();
+    app.prepare.mockRejectedValueOnce(new ProtocolError(-32013, secret));
+    const response = await app.rpc("events/subscribe", input());
+    expect(response.error.code).toBe(-32013);
+    expect(JSON.stringify(response)).not.toContain(secret);
+    expect(app.verifyEndpoint).not.toHaveBeenCalled();
+    expect(app.upsert).not.toHaveBeenCalled();
+  });
+
+  it.each(["", " ", undefined, 123])(
+    "rejects an invalid reservation token %# before verification",
+    async (operationId) => {
+      const app = setup();
+      app.prepare.mockResolvedValueOnce(operationId as never);
+      expect((await app.rpc("events/subscribe", input())).error.code).toBe(
+        -32603,
+      );
+      expect(app.verifyEndpoint).not.toHaveBeenCalled();
+      expect(app.upsert).not.toHaveBeenCalled();
+    },
+  );
 
   it("validates the persisted grant with the same policy after the request ends", async () => {
     const app = setup();
@@ -366,6 +496,7 @@ describe("experimental_registerMcpEvents", () => {
     ).toBe(-32012);
     expect(app.verifyEndpoint).not.toHaveBeenCalled();
     expect(app.upsert).not.toHaveBeenCalled();
+    expect(app.prepare).not.toHaveBeenCalled();
   });
 
   it("rejects argument transformations so identity matches authorized and stored filters", async () => {

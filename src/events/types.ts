@@ -111,16 +111,35 @@ export interface ExperimentalMcpSubscriptionState {
  */
 export interface ExperimentalMcpSubscriptionStore {
   /**
+   * Reserve a bounded, durable operation before callback verification. Return a
+   * unique, nonempty fencing token for this attempt. Supersede older attempts
+   * for this key without changing any active grant, secret or delivery state.
+   * Enforce admission limits here, before network work. Reservations must expire
+   * and be reclaimed after failed verification, aborted requests or crashes.
+   */
+  prepare(
+    key: ExperimentalMcpSubscriptionKey,
+    context: ExperimentalMcpEventContext,
+  ): Promise<string>;
+  /**
    * Persist the verified grant and arrange delivery before resolving. Refresh
    * updates the secret/expiry, resumes suspended work, and applies cursor replay
    * without rewinding a live subscription. Enforce quotas here. Protect secrets
-   * at rest and retain state for the entire granted lifetime.
+   * at rest and retain state for the entire granted lifetime. Atomically require
+   * operationId to match the current, unexpired reservation before any mutation;
+   * reject stale attempts, including ones invalidated by remove(). A repeated
+   * commit for the same operation must converge without applying stale state.
    */
   upsert(
     subscription: ExperimentalMcpWebhookSubscription,
     context: ExperimentalMcpEventContext,
+    operationId: string,
   ): Promise<ExperimentalMcpSubscriptionState>;
-  /** Stop delivery and durably arrange cleanup. False means no matching key. */
+  /**
+   * Atomically invalidate pending operations and stop delivery. Return true for
+   * an existing grant or pending reservation; false only when neither exists.
+   * Retain enough fencing state that delayed upserts cannot revive this key.
+   */
   remove(
     key: ExperimentalMcpSubscriptionKey,
     context: ExperimentalMcpEventContext,
