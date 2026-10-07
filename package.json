@@ -33,10 +33,10 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/vercel/mcp-handler.git"
+    "url": "git+https://github.com/vercel-labs/mcp-handler.git"
   },
   "bugs": {
-    "url": "https://github.com/vercel/mcp-handler/issues"
+    "url": "https://github.com/vercel-labs/mcp-handler/issues"
   },
   "scripts": {
     "build": "tsup",
