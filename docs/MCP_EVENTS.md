@@ -46,8 +46,9 @@ export const POST = withMcpAuth(handler, verifyToken, { required: true });
 
 `./events-backend` is application code, not an included adapter. It supplies
 verified identity, authorization, durable subscription storage and delivery
-infrastructure. The helpers provide protocol registration and validation; they
-do not create a database, send webhooks, or start background timers.
+infrastructure. Registration does not create a database or start background
+timers. Optional [webhook helpers](#optional-webhook-helpers) implement callback
+verification and individual delivery attempts for Node.js backends.
 
 ## Methods and capabilities
 
@@ -158,7 +159,8 @@ The application backend is responsible for:
 - Endpoint consent cached per `(principal, url)`, failed-verification rate limits,
   and egress policy enforcement on every verification and delivery attempt,
   including DNS resolution. Do not follow redirects; bound timeouts and response
-  sizes. The helper only validates HTTPS URL syntax and does not fetch the URL.
+  sizes. Registration only validates HTTPS URL syntax; the optional webhook
+  helpers also enforce these network protections when making requests.
 - Standard Webhooks signing using a vetted implementation. Event deliveries need
   `webhook-id`, `webhook-timestamp`, `webhook-signature` and
   `X-MCP-Subscription-Id`. Re-sign each retry with a fresh timestamp; support
@@ -229,6 +231,126 @@ that previously normalized URLs must reconcile existing keys before migration.
 Keep no-expiry behavior explicit with `ttl.allowNoExpiry`, and reject unsupported
 replay cursors in the backend instead of returning a false success. Applications
 without replay should continue returning `cursor: null`.
+
+## Optional webhook helpers
+
+Two experimental Node.js helpers provide the signed challenge exchange and a
+single event delivery attempt. They use `standardwebhooks` for signatures and
+`request-filtering-agent` for address checks at connection time. Both require
+HTTPS, reject credentials and URL fragments, reject private/special-use
+addresses, preserve TLS certificate verification, and never follow redirects.
+These restrictions also apply in development. There is no custom `fetch` or
+agent override; applications with a different egress policy can keep their own
+`ExperimentalMcpWebhookDelivery` implementation.
+
+### Verify callback consent
+
+`experimental_verifyMcpWebhookEndpoint(target, context)` has the existing
+`verifyEndpoint` signature. It sends one signed verification challenge and
+returns `{ verified: true }` only when a complete `2xx` JSON response echoes the
+nonce. Mismatches and transport failures return `{ verified: false, reason }`
+with the existing diagnostic categories. It never returns endpoint content.
+
+Wrap it in your application's consent cache and admission controls:
+
+```typescript
+import {
+  experimental_verifyMcpWebhookEndpoint,
+  type ExperimentalMcpWebhookDelivery,
+} from "mcp-handler";
+import { consentStore, verificationLimiter } from "./events-backend";
+
+export const webhookDelivery: ExperimentalMcpWebhookDelivery = {
+  async verifyEndpoint(target, context) {
+    // Scope this store to this logical MCP server; isVerified checks expiry.
+    const key = { principal: context.principal, url: target.url };
+    if (await consentStore.isVerified(key)) return { verified: true };
+
+    // Bound attempts per destination host, including failed challenges.
+    await verificationLimiter.check(new URL(target.url).hostname);
+    const result = await experimental_verifyMcpWebhookEndpoint(target, context);
+    if (result.verified) await consentStore.markVerified(key);
+    return result;
+  },
+};
+```
+
+`consentStore` and `verificationLimiter` are application APIs. The helper has no
+process-global consent cache: verification for one principal or logical MCP
+server must not authorize another. Cache consent per `(principal, exact URL)`
+with a bounded lifetime, coalesce concurrent checks, and retain verified status
+with durable no-expiry subscriptions. Keep the existing `prepare → verifyEndpoint
+→ upsert` ordering; a successful challenge alone does not activate delivery or
+make a stale reservation valid.
+
+### Send one event
+
+`experimental_deliverMcpEvent` invokes `experimental_validateMcpEventDelivery`
+first, then signs and sends the event. Use it from a durable worker after loading
+current active state and matching the source event to the subscription filters:
+
+```typescript
+import { experimental_deliverMcpEvent } from "mcp-handler";
+import { issueCreated, subscriptionStore } from "./events-backend";
+
+async function attemptDelivery(job) {
+  const subscription = await subscriptionStore.get(job.subscriptionId);
+  if (!subscription) return;
+
+  // The worker owns filter matching and coordination with cancellation.
+  const result = await experimental_deliverMcpEvent({
+    event: issueCreated,
+    subscription,
+    payload: job.payload,
+    eventId: job.eventId,
+    timestamp: new Date(job.occurredAt),
+    cursor: job.safeWatermark,
+    previousSecrets: await subscriptionStore.getPreviousSecrets(subscription.id),
+    signal: job.signal,
+  });
+
+  // Return to the durable queue's bounded retry/acknowledgement policy.
+  return result;
+}
+```
+
+| Input | Meaning |
+| --- | --- |
+| `event`, `subscription`, `payload` | Trusted definition, freshly loaded active subscription, and matching source data. The helper checks the current permission policy, both schemas, event name and expiry. |
+| `eventId` | Stable event identifier, reused across retries; also sent as `webhook-id`. |
+| `timestamp` | Required `Date` when the event occurred. Persist it with the job and preserve it across retries. |
+| `cursor` | Optional safe acknowledged/abandoned watermark, default `null`. The helper never copies the subscription's requested replay cursor into the delivery. |
+| `previousSecrets` | Up to two additional trusted secrets for a short rotation grace period. Each attempt signs with the subscription's current secret plus these keys. Load current rotation state on each retry. |
+| `signal` | Optional worker cancellation signal. Cancellation rejects with the caller's abort reason and destroys the request. |
+
+The request body is `{ eventId, name, timestamp, data, cursor }`. Every attempt
+gets fresh Standard Webhooks signing headers and `X-MCP-Subscription-Id`. The
+helper snapshots the selected subscription fields and plain JSON payload before
+async validation; unrelated database metadata is ignored. Unpadded valid
+`whsec_` secrets are accepted, as in subscription registration.
+
+Success returns `{ ok: true }`. Transport failures return
+`{ ok: false, reason, retryable, status? }`, with no endpoint response content.
+`410` and `413` are non-retryable for this event, without deleting or terminating
+the subscription. Redirects and oversized responses are also non-retryable.
+Other HTTP failures and network failures are retryable under the worker's
+bounded retry policy. `reason` is one of `connection_refused`, `timeout`,
+`tls_error`, `http_4xx`, `http_5xx`, `redirect`, or `response_too_large`.
+
+Schema/authorization/expiry failures throw `ExperimentalMcpEventDeliveryError`;
+policy-service exceptions also propagate. Invalid URL, key or identifier inputs,
+invalid timestamps/cursors, and oversized outgoing bodies throw before dispatch.
+Do not treat a policy-service outage as revoked access. The helper does not
+schedule retries, update acknowledgement state, compute watermarks, cache
+permissions, or delete subscriptions.
+
+Both network operations use a ten-second total request deadline and a 64 KiB
+response limit; outgoing event envelopes are limited to 256 KiB. DNS address
+checks apply on each attempt, with no pooled connections. Timeouts, aborts,
+truncated responses and oversized responses tear down the request/response.
+These helpers do not send `gap` or `terminated` controls; lifecycle adapters
+remain responsible for those. The validation-only helper below remains useful
+when your backend already provides signing and delivery.
 
 ## Validating delivery in a worker
 
