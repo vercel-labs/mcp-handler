@@ -187,13 +187,19 @@ export function initializeMcpApiHandler(
 function redactEventSecret(body: object): object {
   const request = body as { method?: unknown; params?: unknown };
   if (
-    request.method !== "events/subscribe" ||
+    typeof request.method !== "string" ||
+    !request.method.startsWith("events/") ||
     !request.params ||
     typeof request.params !== "object"
   )
     return body;
   const params = request.params as { delivery?: unknown };
-  if (!params.delivery || typeof params.delivery !== "object") return body;
+  if (
+    !params.delivery ||
+    typeof params.delivery !== "object" ||
+    !("secret" in params.delivery)
+  )
+    return body;
   return {
     ...body,
     params: {

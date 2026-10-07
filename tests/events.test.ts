@@ -740,6 +740,8 @@ describe("experimental_registerMcpEvents", () => {
   it("redacts telemetry without changing the secret passed to the backend", async () => {
     const app = setup();
     await app.rpc("events/subscribe", input());
+    // Callers may reuse the subscribe payload, including the unnecessary key.
+    await app.rpc("events/unsubscribe", input());
     expect(JSON.stringify(app.onEvent.mock.calls)).not.toContain(secret);
     expect(
       app.onEvent.mock.calls.find(
@@ -749,26 +751,34 @@ describe("experimental_registerMcpEvents", () => {
     expect(app.upsert.mock.calls[0][0].secret).toBe(secret);
   });
 
-  it("redacts signing secrets even on servers that have not enabled events", async () => {
-    const onEvent = vi.fn();
-    const handler = createMcpHandler(() => {}, { onEvent });
-    await handler(
-      new Request("https://server.example/mcp", {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          accept: "application/json, text/event-stream",
-        },
-        body: JSON.stringify({
-          jsonrpc: "2.0",
-          id: 1,
-          method: "events/subscribe",
-          params: input(),
+  it.each([
+    "events/subscribe",
+    "events/unsubscribe",
+    "events/list",
+    "events/unknown",
+  ])(
+    "redacts signing secrets in %s even without event registration",
+    async (method) => {
+      const onEvent = vi.fn();
+      const handler = createMcpHandler(() => {}, { onEvent });
+      await handler(
+        new Request("https://server.example/mcp", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            accept: "application/json, text/event-stream",
+          },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            method,
+            params: input(),
+          }),
         }),
-      }),
-    );
-    expect(JSON.stringify(onEvent.mock.calls)).not.toContain(secret);
-  });
+      );
+      expect(JSON.stringify(onEvent.mock.calls)).not.toContain(secret);
+    },
+  );
 
   it("rejects invalid configuration and duplicate registration", () => {
     const { options } = setup();

@@ -65,6 +65,12 @@ outbound operation to the client's callback. Poll and push are not advertised
 or implemented. The helper does not add anything to `tools/list`; a client that
 wants model-callable subscription tools must build those from `events/list`.
 
+The current `@modelcontextprotocol/client` 2.0 capability parser drops the draft
+`events` field from `getServerCapabilities()`, even though it is present in the
+server's `server/discover` response. An Events-aware client must preserve the
+extension in discovery or call `events/list` explicitly. The generic SDK's
+capability accessor alone cannot determine whether this extension is available.
+
 The catalog is returned as a single page, without `nextCursor`. Requests with a
 catalog cursor are rejected. For account-specific discovery, supply a resolver:
 
@@ -320,7 +326,9 @@ Webhook mode does not need push heartbeat notifications or a held-open connectio
 
 ## Request telemetry
 
-`onEvent` continues to report requests, but `events/subscribe` telemetry replaces
-`params.delivery.secret` with `[REDACTED]`, including when the extension is not
-registered. The actual protocol request still receives the original secret.
+`onEvent` continues to report requests, but telemetry for every `events/*`
+method replaces a supplied `params.delivery.secret` with `[REDACTED]`, including
+unknown methods and servers where the extension is not registered. This also
+protects callers that reuse subscribe parameters when unsubscribing. The actual
+protocol request still receives the original secret.
 Application logging outside this hook needs equivalent redaction.
