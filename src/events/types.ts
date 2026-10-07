@@ -157,7 +157,8 @@ export interface ExperimentalMcpSubscriptionStore {
 /**
  * @experimental Adapter to the application's webhook delivery system.
  *
- * This package makes no outbound HTTP requests. The adapter must enforce its
+ * Registration itself makes no outbound HTTP requests. Use the optional
+ * experimental_verifyMcpWebhookEndpoint helper or enforce the adapter's
  * egress policy on every request (including DNS resolution), disable redirects,
  * and bound timeouts/response sizes. Cache consent per (principal, url), rate
  * limit failed verifications, and honor the abort signal.
