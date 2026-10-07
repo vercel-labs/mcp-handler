@@ -1,6 +1,6 @@
 {
   "name": "mcp-handler",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "description": "Framework-agnostic HTTP adapter for Model Context Protocol servers",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
