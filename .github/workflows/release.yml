@@ -24,8 +24,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GH_TOKEN_PULL_REQUESTS }}
 
       - name: Setup Node
         uses: actions/setup-node@v6
@@ -61,5 +59,4 @@ jobs:
           commit: "chore: update package versions"
           title: "chore: update package versions"
           commitMode: github-api
-        env:
-          GITHUB_TOKEN: ${{ secrets.GH_TOKEN_PULL_REQUESTS }}
+          github-token: ${{ github.token }}

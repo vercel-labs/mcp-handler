@@ -21,8 +21,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GH_TOKEN_PULL_REQUESTS }}
 
       - name: Setup Node
         uses: actions/setup-node@v6
@@ -58,5 +56,3 @@ jobs:
           pnpm changeset version --snapshot ${SHORT_SHA}
           pnpm build
           pnpm changeset publish --no-git-tag --tag snapshot
-        env:
-          GITHUB_TOKEN: ${{ secrets.GH_TOKEN_PULL_REQUESTS }}
