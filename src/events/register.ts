@@ -14,6 +14,7 @@ import {
 import { canonical } from "./json";
 import type {
   ExperimentalMcpEventContext,
+  ExperimentalMcpEventDefinition,
   ExperimentalMcpEventsOptions,
   ExperimentalMcpSubscriptionKey,
 } from "./types";
@@ -80,7 +81,19 @@ export function experimental_registerMcpEvents(
         throw new Error("Invalid event catalog");
       names.add(event.name);
     }
-    return events;
+    const visible: ExperimentalMcpEventDefinition[] = [];
+    for (const event of events) {
+      ctx.signal.throwIfAborted();
+      // Filter-specific authorize() cannot run until arguments are supplied.
+      if (
+        event.authorizeDiscovery === undefined ||
+        (await event.authorizeDiscovery(ctx)) === true
+      ) {
+        visible.push(event);
+      }
+    }
+    ctx.signal.throwIfAborted();
+    return visible;
   }
 
   server.server.setRequestHandler(

@@ -207,6 +207,122 @@ describe("experimental_registerMcpEvents", () => {
     expect(app.upsert).not.toHaveBeenCalled();
   });
 
+  it.each([false, true])(
+    "filters a static catalog by discovery permission without inventing arguments (modern=%s)",
+    async (modern) => {
+      const app = setup();
+      const authorizeDiscovery = vi.fn(
+        async ({ principal }: ExperimentalMcpEventContext) =>
+          principal === "alice",
+      );
+      app.event.authorizeDiscovery = authorizeDiscovery;
+      app.options.events = [
+        app.event,
+        { ...app.event, name: "public.event", authorizeDiscovery: undefined },
+      ];
+      const allowed = await app.rpc("events/list", {}, "alice", modern);
+      expect(
+        allowed.result.events.map((event: { name: string }) => event.name),
+      ).toEqual(["issue.created", "public.event"]);
+      const restricted = await app.rpc("events/list", {}, "bob", modern);
+      expect(
+        restricted.result.events.map((event: { name: string }) => event.name),
+      ).toEqual(["public.event"]);
+      expect(authorizeDiscovery).toHaveBeenLastCalledWith({
+        principal: "bob",
+        authInfo: expect.objectContaining({ extra: { subject: "bob" } }),
+        signal: expect.any(AbortSignal),
+      });
+      expect(app.authorize).not.toHaveBeenCalled();
+      expect(app.prepare).not.toHaveBeenCalled();
+      expect(app.verifyEndpoint).not.toHaveBeenCalled();
+    },
+  );
+
+  it("applies discovery permission to a dynamically resolved catalog", async () => {
+    const app = setup();
+    app.options.events = async () => [app.event];
+    app.event.authorizeDiscovery = async () => false;
+    expect((await app.rpc("events/list")).result.events).toEqual([]);
+    expect(app.authorize).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])(
+    "rechecks discovery permission before a direct subscribe (modern=%s)",
+    async (modern) => {
+      const app = setup();
+      const authorizeDiscovery = vi.fn(async () => true);
+      app.event.authorizeDiscovery = authorizeDiscovery;
+      expect(
+        (await app.rpc("events/list", {}, "alice", modern)).result.events,
+      ).toHaveLength(1);
+      authorizeDiscovery.mockResolvedValue(false);
+      const response = await app.rpc(
+        "events/subscribe",
+        input(),
+        "alice",
+        modern,
+      );
+      expect(response.error).toMatchObject({
+        code: -32011,
+        data: { kind: "event" },
+      });
+      expect(app.authorize).not.toHaveBeenCalled();
+      expect(app.prepare).not.toHaveBeenCalled();
+      expect(app.verifyEndpoint).not.toHaveBeenCalled();
+      expect(app.upsert).not.toHaveBeenCalled();
+    },
+  );
+
+  it("still authorizes the actual filters after discovery succeeds", async () => {
+    const app = setup();
+    app.event.authorizeDiscovery = async () => true;
+    expect((await app.rpc("events/list")).result.events).toHaveLength(1);
+    const response = await app.rpc("events/subscribe", {
+      ...input(),
+      arguments: { project: "PRIVATE" },
+    });
+    expect(response.error.code).toBe(-32012);
+    expect(app.authorize).toHaveBeenCalledWith(
+      { project: "PRIVATE" },
+      {
+        principal: "alice",
+        signal: expect.any(AbortSignal),
+      },
+    );
+    expect(app.prepare).not.toHaveBeenCalled();
+    expect(app.verifyEndpoint).not.toHaveBeenCalled();
+  });
+
+  it("fails safely when the discovery policy cannot complete", async () => {
+    const app = setup();
+    app.event.authorizeDiscovery = async () => {
+      throw new Error(`Policy backend unavailable: ${secret}`);
+    };
+    for (const method of ["events/list", "events/subscribe"]) {
+      const response = await app.rpc(
+        method,
+        method === "events/list" ? {} : input(),
+      );
+      expect(response.error.code).toBe(-32603);
+      expect(JSON.stringify(response)).not.toContain(secret);
+    }
+    expect(app.authorize).not.toHaveBeenCalled();
+    expect(app.prepare).not.toHaveBeenCalled();
+    expect(app.verifyEndpoint).not.toHaveBeenCalled();
+  });
+
+  it("allows unsubscribe after discovery permission is removed", async () => {
+    const app = setup();
+    await app.rpc("events/subscribe", input());
+    const authorizeDiscovery = vi.fn(async () => false);
+    app.event.authorizeDiscovery = authorizeDiscovery;
+    const response = await app.rpc("events/unsubscribe", input());
+    expect(response.error).toBeUndefined();
+    expect(app.records.size).toBe(0);
+    expect(authorizeDiscovery).not.toHaveBeenCalled();
+  });
+
   it.each(["events/list", "events/subscribe", "events/unsubscribe"])(
     "requires authentication for %s",
     async (method) => {

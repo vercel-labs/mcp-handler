@@ -17,6 +17,7 @@ import {
   subscriptionStore,
   durableWebhookDelivery,
   principalFromVerifiedAuth,
+  canReadAnyProject,
   canReadProject,
   verifyToken,
 } from "./events-backend";
@@ -26,6 +27,7 @@ const issueCreated: ExperimentalMcpEventDefinition = {
   description: "A new issue is created in a project.",
   inputSchema: z.strictObject({ project_id: z.string() }),
   payloadSchema: z.object({ id: z.string(), title: z.string() }),
+  authorizeDiscovery: ({ principal }) => canReadAnyProject(principal),
   authorize: (args, { principal }) =>
     canReadProject(principal, args.project_id as string),
 };
@@ -72,13 +74,29 @@ events: async (context) => {
 },
 ```
 
-The resolver runs within each authenticated request. A static array intentionally
-advertises the same event definitions to every authenticated principal. Each
-event's required `authorize` callback separately checks the requested filters
-before verification or storage changes. It receives `{ principal, signal }` so
-the same policy can run in a delivery worker without request credentials. The
-catalog and adapter callbacks still receive request `authInfo`. Use
-non-transforming Standard Schemas:
+The resolver runs within each authenticated request. An event can additionally
+provide `authorizeDiscovery(context)` to hide its definition from callers who
+cannot subscribe to that event type. This optional policy receives the verified
+request context (`principal`, `authInfo`, `signal`) and must explicitly return
+`true` to expose the event. It runs for both static arrays and resolved catalogs,
+on every list and subscribe request. A hidden name cannot bypass the policy by
+being supplied directly to `events/subscribe`; it returns `NotFound` before
+filter authorization, reservation or callback verification. Policy exceptions
+fail the request through the normal safe error handling. Omit the hook when the
+catalog resolver already determines visibility or all callers may discover it.
+
+Discovery has no event arguments, so the helper does not call `authorize` with
+empty or invented filters. Each event's required `authorize(arguments, context)`
+separately checks the actual requested filters before verification or storage
+changes. For example, `authorizeDiscovery` can check whether the caller has any
+readable projects, while `authorize` checks access to the specific `project_id`.
+Visibility does not grant permission to every set of filters. Unsubscribe stays
+available when discovery permission is removed so existing subscriptions can
+still be stopped.
+
+The filter policy receives `{ principal, signal }` so it can also run in a
+delivery worker without request credentials. The catalog and adapter callbacks
+still receive request `authInfo`. Use non-transforming Standard Schemas:
 defaults, stripping fields, coercion or other argument transformations are
 rejected when they change the input, because arguments are part of identity.
 

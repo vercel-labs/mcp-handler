@@ -24,6 +24,14 @@ export interface ExperimentalMcpEventDefinition {
   inputSchema: StandardSchemaWithJSON;
   payloadSchema: StandardSchemaWithJSON;
   /**
+   * Optional request-time visibility policy for listing and subscription lookup.
+   * No event arguments exist at discovery time. Omit to use the catalog
+   * resolver's visibility; this does not replace per-argument authorization.
+   */
+  authorizeDiscovery?(
+    context: ExperimentalMcpEventContext,
+  ): boolean | Promise<boolean>;
+  /**
    * Authorize these filters against current permissions and application-held
    * grants. Used at subscribe time and by delivery validation, without a token.
    */
