@@ -1,5 +1,5 @@
-import { describe, it, expect } from "vitest";
-import { protectedResourceHandler } from "../src/index";
+import { describe, it, expect, vi } from "vitest";
+import { protectedResourceHandler, withMcpAuth } from "../src/index";
 
 describe("auth", () => {
   describe("resource metadata URL to resource identifier mapping", () => {
@@ -135,6 +135,70 @@ describe("auth", () => {
       const json = await res.json();
       // Should use explicit override, ignoring both req.url and proxy headers
       expect(json.resource).toBe("https://my-public-domain.com");
+    });
+  });
+
+  describe("withMcpAuth token expiry and scope checks", () => {
+    const ok = () => new Response("ok");
+
+    function buildHandler(requiredScopes?: string[]) {
+      return withMcpAuth(ok, (_req, bearer) => {
+        if (!bearer) return undefined;
+        const [scopes, expiresAt] = bearer.split("|");
+        return {
+          token: bearer,
+          clientId: "c1",
+          scopes: scopes.split(","),
+          expiresAt: expiresAt ? Number(expiresAt) : undefined,
+        };
+      }, { required: true, requiredScopes });
+    }
+
+    function request(token: string) {
+      return new Request("https://example.com/mcp", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+    }
+
+    it("returns 401 for an expired token even when scopes are missing", async () => {
+      const handler = buildHandler(["admin"]);
+      const expired = Math.floor(Date.now() / 1000) - 60;
+      const res = await handler(request(`read|${expired}`));
+      expect(res.status).toBe(401);
+      const challenge = res.headers.get("WWW-Authenticate") ?? "";
+      expect(challenge).toContain("invalid_token");
+      expect(challenge).not.toContain("insufficient_scope");
+    });
+
+    it("returns 403 for a live token that lacks required scopes", async () => {
+      const handler = buildHandler(["admin"]);
+      const future = Math.floor(Date.now() / 1000) + 3600;
+      const res = await handler(request(`read|${future}`));
+      expect(res.status).toBe(403);
+      const challenge = res.headers.get("WWW-Authenticate") ?? "";
+      expect(challenge).toContain("insufficient_scope");
+    });
+
+    it("passes through when token is live and scopes match", async () => {
+      const handler = buildHandler(["read"]);
+      const future = Math.floor(Date.now() / 1000) + 3600;
+      const res = await handler(request(`read|${future}`));
+      expect(res.status).toBe(200);
+    });
+
+    it("returns 401 for an expired token with no required scopes", async () => {
+      const handler = buildHandler();
+      const expired = Math.floor(Date.now() / 1000) - 60;
+      const res = await handler(request(`read|${expired}`));
+      expect(res.status).toBe(401);
+    });
+
+    it("returns 401 when no authorization is provided and auth is required", async () => {
+      const handler = buildHandler();
+      const res = await handler(
+        new Request("https://example.com/mcp"),
+      );
+      expect(res.status).toBe(401);
     });
   });
 });

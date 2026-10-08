@@ -74,6 +74,14 @@ export function withMcpAuth(
         return handler(req);
       }
 
+      // Check if the token is expired before authorizing it. An expired token
+      // is invalid_token (401) per RFC 6750 §3.1, so it has to be reported that
+      // way even when scopes are also missing: insufficient_scope (403) tells
+      // the client its permissions are wrong and it will not refresh.
+      if (authInfo.expiresAt && authInfo.expiresAt < Date.now() / 1000) {
+        throw new OAuthError(OAuthErrorCode.InvalidToken, "Token has expired");
+      }
+
       // Check if token has the required scopes (if any)
       if (requiredScopes?.length) {
         const hasAllScopes = requiredScopes.every((scope) =>
@@ -86,11 +94,6 @@ export function withMcpAuth(
             "Insufficient scope",
           );
         }
-      }
-
-      // Check if the token is expired
-      if (authInfo.expiresAt && authInfo.expiresAt < Date.now() / 1000) {
-        throw new OAuthError(OAuthErrorCode.InvalidToken, "Token has expired");
       }
 
       // Set auth info on the request object after successful verification
