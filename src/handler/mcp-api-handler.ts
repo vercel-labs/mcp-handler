@@ -53,6 +53,14 @@ export type McpHandlerOptions = McpServerOptions & {
    * @experimental WebMCP is an early-stage browser API.
    */
   experimental_webMcp?: WebMcpOptions;
+  /**
+   * An MCP Events engine from `createMcpEvents` (`mcp-handler/events`).
+   * Registers `events/list`, `events/subscribe` and `events/unsubscribe` on
+   * this route after the initializer runs.
+   *
+   * @experimental Follows draft SEP-3415.
+   */
+  events?: { register(server: McpServer): void };
 };
 
 export function initializeMcpApiHandler(
@@ -70,6 +78,7 @@ export function initializeMcpApiHandler(
     onEvent,
     maxSubscriptions,
     experimental_webMcp,
+    events,
     ...mcpServerOptions
   } = options;
 
@@ -104,6 +113,7 @@ export function initializeMcpApiHandler(
     async () => {
       const server = new McpServer(serverInfo, mcpServerOptions);
       await initializeServer(server);
+      events?.register(server);
       return server;
     },
     {

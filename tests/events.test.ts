@@ -100,6 +100,7 @@ function setup(overrides: Partial<ExperimentalMcpEventsOptions> = {}) {
     params: unknown = {},
     token: string | null = "alice",
     modern = false,
+    clientCapabilities: Record<string, unknown> = {},
   ) {
     const response = await handler(
       new Request("https://server.example/custom/mcp", {
@@ -125,7 +126,8 @@ function setup(overrides: Partial<ExperimentalMcpEventsOptions> = {}) {
                       name: "events-test",
                       version: "1",
                     },
-                    "io.modelcontextprotocol/clientCapabilities": {},
+                    "io.modelcontextprotocol/clientCapabilities":
+                      clientCapabilities,
                   },
                 }
               : {}),
@@ -189,6 +191,9 @@ describe("experimental_registerMcpEvents", () => {
     const app = setup();
     const response = await app.rpc("server/discover", {}, "alice", true);
     expect(response.result.capabilities.events).toEqual({});
+    expect(response.result.capabilities.extensions).toEqual({
+      "io.modelcontextprotocol/events": {},
+    });
   });
 
   it("isolates catalog discovery by verified principal", async () => {
@@ -793,5 +798,129 @@ describe("experimental_registerMcpEvents", () => {
     expect(() => experimental_registerMcpEvents(server, options)).toThrow(
       "already registered",
     );
+  });
+});
+
+describe("SEP-3415 and ChatGPT compat dialects", () => {
+  const sep = { extensions: { "io.modelcontextprotocol/events": {} } };
+
+  it("advertises both capability shapes in discovery and initialize", async () => {
+    const app = setup();
+    const discover = await app.rpc("server/discover", {}, "alice", true);
+    const initialize = await app.rpc("initialize", {
+      protocolVersion: "2025-11-25",
+      capabilities: {},
+      clientInfo: { name: "events-test", version: "1" },
+    });
+    for (const { result } of [discover, initialize])
+      expect(result.capabilities).toMatchObject({
+        events: {},
+        extensions: { "io.modelcontextprotocol/events": {} },
+      });
+  });
+
+  it("advertises only the extension when compat is disabled", async () => {
+    const app = setup({ chatgptCompat: false });
+    const { result } = await app.rpc("server/discover", {}, "alice", true);
+    expect(result.capabilities.events).toBeUndefined();
+    expect(result.capabilities.extensions).toEqual({
+      "io.modelcontextprotocol/events": {},
+    });
+  });
+
+  const failures = [
+    ["NotFound", { ...input(), name: "missing.event" }, -32011, -32023],
+    [
+      "Forbidden",
+      { ...input(), arguments: { project: "XYZ" } },
+      -32012,
+      -32024,
+    ],
+    [
+      "Unsupported",
+      { ...input(), delivery: { ...input().delivery, mode: "push" } },
+      -32014,
+      -32026,
+    ],
+  ] as const;
+
+  it.each(failures)(
+    "uses the client's dialect for %s",
+    async (_, params, compat, sepCode) => {
+      const app = setup();
+      // Legacy requests have no envelope; modern ones without the extension are compat.
+      expect((await app.rpc("events/subscribe", params)).error.code).toBe(
+        compat,
+      );
+      expect(
+        (await app.rpc("events/subscribe", params, "alice", true)).error.code,
+      ).toBe(compat);
+      expect(
+        (await app.rpc("events/subscribe", params, "alice", true, sep)).error
+          .code,
+      ).toBe(sepCode);
+      expect(
+        (await setup({ chatgptCompat: false }).rpc("events/subscribe", params))
+          .error.code,
+      ).toBe(sepCode);
+    },
+  );
+
+  it("maps callback verification failures and keeps their reason", async () => {
+    const app = setup();
+    app.verifyEndpoint.mockResolvedValue({
+      verified: false,
+      reason: "timeout",
+    } as never);
+    for (const [capabilities, code] of [
+      [{}, -32015],
+      [sep, -32027],
+    ] as const) {
+      const { error } = await app.rpc(
+        "events/subscribe",
+        input(),
+        "alice",
+        true,
+        capabilities,
+      );
+      expect(error).toEqual({
+        code,
+        message: "Callback verification failed",
+        data: { reason: "timeout" },
+      });
+    }
+  });
+
+  it("translates adapter errors thrown in either numbering", async () => {
+    const app = setup();
+    // Each client receives the other dialect's numbering from the adapter.
+    app.prepare.mockRejectedValueOnce(new ProtocolError(-32025, "quota"));
+    app.prepare.mockRejectedValueOnce(new ProtocolError(-32013, "quota"));
+    const compat = await app.rpc("events/subscribe", input(), "alice", true);
+    const sepClient = await app.rpc(
+      "events/subscribe",
+      input(),
+      "alice",
+      true,
+      sep,
+    );
+    expect(compat.error).toMatchObject({
+      code: -32013,
+      message: "Resource exhausted",
+    });
+    expect(sepClient.error).toMatchObject({
+      code: -32025,
+      message: "Resource exhausted",
+    });
+  });
+
+  it("records the subscribing client's dialect on the grant", async () => {
+    const app = setup();
+    await app.rpc("events/subscribe", input(), "alice", true);
+    await app.rpc("events/subscribe", input(), "alice", true, sep);
+    expect(app.upsert.mock.calls.map(([record]) => record.protocol)).toEqual([
+      "chatgpt",
+      "sep-3415",
+    ]);
   });
 });

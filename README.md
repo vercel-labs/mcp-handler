@@ -117,7 +117,7 @@ See [Authorization](docs/AUTHORIZATION.md) for wiring details.
 - [Authorization](docs/AUTHORIZATION.md) - OAuth and token verification
 - [Advanced Usage](docs/ADVANCED.md) - Dynamic routing, Nuxt, configuration options
 - [WebMCP Bridge](docs/WEBMCP.md) - Expose allowlisted tools to in-page agents (experimental)
-- [MCP Events](docs/MCP_EVENTS.md) - Register draft subscriptions, verify callbacks, and send signed events with application-owned storage and retries (experimental)
+- [MCP Events](docs/MCP_EVENTS.md) - Webhook event subscriptions for SEP-3415 clients and ChatGPT, with Redis and Vercel Queues adapters (experimental)
 
 ## Features
 

@@ -2,6 +2,7 @@ import type {
   AuthInfo,
   StandardSchemaWithJSON,
 } from "@modelcontextprotocol/server";
+import type { ExperimentalMcpEventsDialect } from "./protocol";
 
 /** @experimental Authorization shared by subscription requests and workers. */
 export interface ExperimentalMcpEventAuthorizationContext {
@@ -59,6 +60,11 @@ export interface ExperimentalMcpWebhookSubscription
   /** Replay request, not a persisted safe delivery watermark. */
   cursor: string | null;
   maxAgeMs?: number;
+  /**
+   * The dialect of the client that created or refreshed this grant; always set
+   * by registration. Only send `gap`/`terminated` notices to "sep-3415".
+   */
+  protocol?: ExperimentalMcpEventsDialect;
 }
 
 /** @experimental Inputs for worker-side validation; no signing secret needed. */
@@ -194,6 +200,12 @@ export interface ExperimentalMcpEventsOptions {
         | Promise<readonly ExperimentalMcpEventDefinition[]>);
   subscriptions: ExperimentalMcpSubscriptionStore;
   delivery: ExperimentalMcpWebhookDelivery;
+  /**
+   * Also speak the design-sketch dialect ChatGPT implements: advertise the
+   * top-level `events` capability and use its error codes for clients that do
+   * not declare the SEP-3415 extension per request. @default true
+   */
+  chatgptCompat?: boolean;
   ttl?: {
     /** @default 60000 */
     minMs?: number;

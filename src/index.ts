@@ -2,15 +2,9 @@
 export { default as createMcpHandler } from "./handler";
 export type { McpHandlerOptions, WebMcpOptions } from "./handler";
 
+// MCP Events: prefer the `mcp-handler/events` subpath. These root exports remain
+// for compatibility with 2.3.0 and stay free of Node.js-only dependencies.
 export { experimental_registerMcpEvents } from "./events/register";
-export {
-  experimental_verifyMcpWebhookEndpoint,
-  experimental_deliverMcpEvent,
-} from "./events/webhook";
-export type {
-  ExperimentalMcpEventDeliveryOptions,
-  ExperimentalMcpWebhookResult,
-} from "./events/webhook";
 export {
   experimental_validateMcpEventDelivery,
   ExperimentalMcpEventDeliveryError,
@@ -29,6 +23,7 @@ export type {
   ExperimentalMcpWebhookFailure,
   ExperimentalMcpWebhookSubscription,
 } from "./events/types";
+export type { ExperimentalMcpEventsDialect } from "./events/protocol";
 
 /**
  * @deprecated Use withMcpAuth instead

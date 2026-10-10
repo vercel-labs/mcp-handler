@@ -14,7 +14,7 @@
     ".": {
       "types": {
         "import": "./dist/index.d.mts",
-        "require": "./dist/index.d.cjs"
+        "require": "./dist/index.d.ts"
       },
       "import": "./dist/index.mjs",
       "require": "./dist/index.js"
@@ -22,10 +22,25 @@
     "./next": {
       "types": {
         "import": "./dist/index.d.mts",
-        "require": "./dist/index.d.cjs"
+        "require": "./dist/index.d.ts"
       },
       "import": "./dist/index.mjs",
       "require": "./dist/index.js"
+    },
+    "./events": {
+      "types": {
+        "import": "./dist/events/index.d.mts",
+        "require": "./dist/events/index.d.ts"
+      },
+      "import": "./dist/events/index.mjs",
+      "require": "./dist/events/index.js"
+    }
+  },
+  "typesVersions": {
+    "*": {
+      "events": [
+        "./dist/events/index.d.ts"
+      ]
     }
   },
   "files": [
@@ -66,6 +81,8 @@
     "@modelcontextprotocol/client": "^2.0.0",
     "@modelcontextprotocol/server": "^2.0.0",
     "@types/node": "^22.15.8",
+    "@vercel/connect": "^2.4.1",
+    "redis": "^6.3.0",
     "tsup": "^8.0.0",
     "typescript": "^5.0.0",
     "vitest": "^3.2.1",
@@ -73,13 +90,17 @@
   },
   "peerDependencies": {
     "@modelcontextprotocol/server": "^2.0.0",
-    "next": ">=13.0.0"
+    "next": ">=13.0.0",
+    "@vercel/connect": ">=2.4.0"
   },
   "peerDependenciesMeta": {
     "@modelcontextprotocol/server": {
       "optional": false
     },
     "next": {
+      "optional": true
+    },
+    "@vercel/connect": {
       "optional": true
     }
   },

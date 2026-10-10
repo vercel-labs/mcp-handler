@@ -1,7 +1,6 @@
 import {
   ProtocolError,
   type McpServer,
-  type ServerCapabilities,
   type ServerContext,
 } from "@modelcontextprotocol/server";
 import {
@@ -12,6 +11,14 @@ import {
   webhookFailures,
 } from "./schemas";
 import { canonical } from "./json";
+import {
+  detectDialect,
+  errorCode,
+  errorName,
+  eventsCapabilities,
+  type EventsErrorName,
+  type ExperimentalMcpEventsDialect,
+} from "./protocol";
 import { validateUrl, validateSecret } from "./webhook-validation";
 import type {
   ExperimentalMcpEventContext,
@@ -26,32 +33,20 @@ const registered = new WeakSet<McpServer>();
  * Register the draft MCP Events webhook control methods on the existing MCP
  * endpoint. Storage and delivery must live outside the per-request server.
  *
- * @experimental Follows the experimental MCP Events design sketch, not a stable
- * MCP specification. Poll/stream delivery and model-tool generation are excluded.
+ * @experimental Follows draft SEP-3415, with ChatGPT's design-sketch dialect
+ * detected per request unless `chatgptCompat` is false. Not a stable MCP
+ * specification. Poll/stream delivery and model-tool generation are excluded.
  */
 export function experimental_registerMcpEvents(
   server: McpServer,
   options: ExperimentalMcpEventsOptions,
 ): void {
   if (registered.has(server)) throw new Error("MCP Events already registered");
-  const minMs = options.ttl?.minMs ?? 60_000;
-  const defaultMs = options.ttl?.defaultMs ?? 3_600_000;
-  const maxMs = options.ttl?.maxMs ?? 86_400_000;
-  if (
-    ![minMs, defaultMs, maxMs].every(
-      (value) => Number.isSafeInteger(value) && value > 0,
-    ) ||
-    minMs > defaultMs ||
-    defaultMs > maxMs ||
-    maxMs > 8.64e15 - Date.now()
-  )
-    throw new Error(
-      "MCP Events TTLs must satisfy 0 < minMs <= defaultMs <= maxMs",
-    );
+  const { minMs, defaultMs, maxMs } = resolveTtl(options.ttl);
   registered.add(server);
+  const chatgptCompat = options.chatgptCompat ?? true;
 
-  // The SDK preserves extension capabilities but does not yet type events.
-  server.server.registerCapabilities({ events: {} } as ServerCapabilities);
+  server.server.registerCapabilities(eventsCapabilities(chatgptCompat));
 
   async function context(
     ctx: ServerContext,
@@ -62,11 +57,11 @@ export function experimental_registerMcpEvents(
       (authInfo.expiresAt !== undefined &&
         authInfo.expiresAt <= Date.now() / 1000)
     ) {
-      throw new ProtocolError(-32012, "Authentication required");
+      throw new EventsError("Forbidden", "Authentication required");
     }
     const principal = await options.getPrincipal(authInfo);
     if (typeof principal !== "string" || !principal.trim()) {
-      throw new ProtocolError(-32012, "Authenticated principal required");
+      throw new EventsError("Forbidden", "Authenticated principal required");
     }
     return { principal, authInfo, signal: ctx.mcpReq.signal };
   }
@@ -101,7 +96,7 @@ export function experimental_registerMcpEvents(
     "events/list",
     { params: listParams },
     async (params, ctx) =>
-      safe(async () => {
+      safe(detectDialect(ctx, chatgptCompat), async () => {
         const auth = await context(ctx);
         // This adapter returns the complete account-scoped catalog in one page.
         if (params.cursor !== undefined)
@@ -128,11 +123,12 @@ export function experimental_registerMcpEvents(
   server.server.setRequestHandler(
     "events/subscribe",
     { params: subscribeParams },
-    async (params, ctx) =>
-      safe(async () => {
+    async (params, ctx) => {
+      const dialect = detectDialect(ctx, chatgptCompat);
+      return safe(dialect, async () => {
         const auth = await context(ctx);
         if (params.delivery.mode !== "webhook") {
-          throw new ProtocolError(-32014, "Unsupported delivery mode", {
+          throw new EventsError("Unsupported", "Unsupported delivery mode", {
             feature: "deliveryMode",
           });
         }
@@ -142,7 +138,9 @@ export function experimental_registerMcpEvents(
           (candidate) => candidate.name === params.name,
         );
         if (!event)
-          throw new ProtocolError(-32011, "Event not found", { kind: "event" });
+          throw new EventsError("NotFound", "Event not found", {
+            kind: "event",
+          });
         const checked = await event.inputSchema["~standard"].validate(
           params.arguments,
         );
@@ -161,7 +159,7 @@ export function experimental_registerMcpEvents(
             signal: auth.signal,
           })) !== true
         ) {
-          throw new ProtocolError(-32012, "Event arguments are not authorized");
+          throw new EventsError("Forbidden", "Event arguments not authorized");
         }
         const key = await subscriptionKey(
           auth.principal,
@@ -183,9 +181,11 @@ export function experimental_registerMcpEvents(
           const reason = webhookFailures.includes(verification.reason)
             ? verification.reason
             : "challenge_failed";
-          throw new ProtocolError(-32015, "Callback verification failed", {
-            reason,
-          });
+          throw new EventsError(
+            "CallbackEndpointError",
+            "Callback verification failed",
+            { reason },
+          );
         }
         auth.signal.throwIfAborted();
         const ttl =
@@ -203,6 +203,7 @@ export function experimental_registerMcpEvents(
             ...(params.maxAgeMs !== undefined
               ? { maxAgeMs: params.maxAgeMs }
               : {}),
+            protocol: dialect,
           },
           auth,
           operationId,
@@ -210,14 +211,15 @@ export function experimental_registerMcpEvents(
         const result = await subscriptionState["~standard"].validate(state);
         if (result.issues) throw new Error("Invalid subscription state");
         return { id: key.id, refreshBefore, ...result.value };
-      }),
+      });
+    },
   );
 
   server.server.setRequestHandler(
     "events/unsubscribe",
     { params: unsubscribeParams },
     async (params, ctx) =>
-      safe(async () => {
+      safe(detectDialect(ctx, chatgptCompat), async () => {
         const auth = await context(ctx);
         validateUrl(params.delivery.url);
         const key = await subscriptionKey(
@@ -229,13 +231,32 @@ export function experimental_registerMcpEvents(
         // Cleanup must remain possible after an event is removed or its schema changes.
         auth.signal.throwIfAborted();
         if (!(await options.subscriptions.remove(key, auth))) {
-          throw new ProtocolError(-32011, "Subscription not found", {
+          throw new EventsError("NotFound", "Subscription not found", {
             kind: "subscription",
           });
         }
         return {};
       }),
   );
+}
+
+/** Apply TTL defaults and reject invalid bounds. */
+export function resolveTtl(ttl: ExperimentalMcpEventsOptions["ttl"]) {
+  const minMs = ttl?.minMs ?? 60_000;
+  const defaultMs = ttl?.defaultMs ?? 3_600_000;
+  const maxMs = ttl?.maxMs ?? 86_400_000;
+  if (
+    ![minMs, defaultMs, maxMs].every(
+      (value) => Number.isSafeInteger(value) && value > 0,
+    ) ||
+    minMs > defaultMs ||
+    defaultMs > maxMs ||
+    maxMs > 8.64e15 - Date.now()
+  )
+    throw new Error(
+      "MCP Events TTLs must satisfy 0 < minMs <= defaultMs <= maxMs",
+    );
+  return { minMs, defaultMs, maxMs };
 }
 
 async function subscriptionKey(
@@ -256,39 +277,59 @@ async function subscriptionKey(
   return { id, principal, name, arguments: args, url };
 }
 
-async function safe<T>(run: () => Promise<T>): Promise<T> {
+/** A protocol error named by meaning; safe() picks the dialect's code. */
+class EventsError extends Error {
+  constructor(
+    readonly kind: EventsErrorName,
+    message: string,
+    readonly data?: unknown,
+  ) {
+    super(message);
+  }
+}
+
+const messages: Record<EventsErrorName, string> = {
+  NotFound: "Event or subscription not found",
+  Forbidden: "Forbidden",
+  ResourceExhausted: "Resource exhausted",
+  Unsupported: "Unsupported event option",
+  CallbackEndpointError: "Callback verification failed",
+};
+
+async function safe<T>(
+  dialect: ExperimentalMcpEventsDialect,
+  run: () => Promise<T>,
+): Promise<T> {
   try {
     return await run();
   } catch (error) {
     // Adapter exceptions can contain webhook secrets or endpoint response data.
-    if (
-      error instanceof ProtocolError &&
-      [-32602, -32011, -32012, -32013, -32014, -32015].includes(error.code)
-    ) {
-      const messages: Record<number, string> = {
-        [-32602]: "Invalid event parameters",
-        [-32011]: "Event or subscription not found",
-        [-32012]: "Forbidden",
-        [-32013]: "Resource exhausted",
-        [-32014]: "Unsupported event option",
-        [-32015]: "Callback verification failed",
-      };
+    // Adapters may throw ProtocolErrors in either dialect's numbering.
+    const kind =
+      error instanceof EventsError
+        ? error.kind
+        : error instanceof ProtocolError
+        ? errorName(error.code)
+        : undefined;
+    if (kind) {
       // Only fixed categories cross the wire, including for intentional adapter errors.
-      const data = error.data as
+      const data = (error as EventsError | ProtocolError).data as
         | { reason?: unknown; kind?: unknown; feature?: unknown }
         | undefined;
       const detail =
-        error.code === -32015 &&
+        kind === "CallbackEndpointError" &&
         webhookFailures.some((reason) => reason === data?.reason)
           ? { reason: data!.reason }
-          : error.code === -32011 &&
+          : kind === "NotFound" &&
             (data?.kind === "event" || data?.kind === "subscription")
           ? { kind: data.kind }
-          : error.code === -32014 && data?.feature === "deliveryMode"
+          : kind === "Unsupported" && data?.feature === "deliveryMode"
           ? { feature: "deliveryMode" }
           : undefined;
-      throw new ProtocolError(error.code, messages[error.code], detail);
+      throw new ProtocolError(errorCode(dialect, kind), messages[kind], detail);
     }
+    if (error instanceof ProtocolError && error.code === -32602)
+      throw new ProtocolError(-32602, "Invalid event parameters");
     throw new ProtocolError(-32603, "MCP Events operation failed");
   }
 }
