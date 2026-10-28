@@ -57,7 +57,9 @@
   "license": "Apache-2.0",
   "dependencies": {
     "chalk": "^5.3.0",
-    "commander": "^11.1.0"
+    "commander": "^11.1.0",
+    "request-filtering-agent": "^3.2.1",
+    "standardwebhooks": "^1.1.1"
   },
   "devDependencies": {
     "@changesets/cli": "^2.27.12",
