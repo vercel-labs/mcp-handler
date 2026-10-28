@@ -1,5 +1,11 @@
 # mcp-handler
 
+## 2.3.1
+
+### Patch Changes
+
+- d7771d4: Return `401 invalid_token` for expired tokens before evaluating required scopes, including tokens at their expiration time. Document and test the existing scope challenges and retry flow for step-up authorization.
+
 ## 2.3.0
 
 ### Minor Changes
