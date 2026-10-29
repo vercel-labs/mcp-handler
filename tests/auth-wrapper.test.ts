@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AuthInfo } from "@modelcontextprotocol/server";
+import { OAuthError, OAuthErrorCode } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { createMcpHandler, withMcpAuth } from "../src/index";
 
@@ -82,6 +83,55 @@ describe("withMcpAuth authorization challenges", () => {
       error_description: "Invalid token",
     });
     expect(execute).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { code: OAuthErrorCode.InvalidToken, status: 401 },
+    { code: OAuthErrorCode.InsufficientScope, status: 403 },
+    { code: OAuthErrorCode.ServerError, status: 500 },
+  ])(
+    "returns $status without logging when token verification throws $code",
+    async ({ code, status }) => {
+      const log = vi.spyOn(console, "error").mockImplementation(() => {});
+      const execute = vi.fn(() => new Response("ok"));
+      const handler = withMcpAuth(
+        execute,
+        async () => {
+          throw new OAuthError(code, "Rejected by verifier");
+        },
+        { required: true, requiredScopes },
+      );
+
+      const response = await handler(new Request(endpoint));
+
+      expect(response.status).toBe(status);
+      expect(await response.json()).toEqual({
+        error: code,
+        error_description: "Rejected by verifier",
+      });
+      expect(log).not.toHaveBeenCalled();
+      expect(execute).not.toHaveBeenCalled();
+    },
+  );
+
+  it("logs untyped token verification errors and returns 401", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const failure = new Error("connection to db failed");
+    const handler = withMcpAuth(
+      () => new Response("ok"),
+      async () => {
+        throw failure;
+      },
+      { required: true },
+    );
+
+    const response = await handler(new Request(endpoint));
+
+    expect(response.status).toBe(401);
+    expect(log).toHaveBeenCalledExactlyOnceWith(
+      "Unexpected error authenticating bearer token:",
+      failure,
+    );
   });
 
   it.each([undefined, []])(
