@@ -10,6 +10,15 @@ import { createMcpHandler } from "../src/index";
 import { withMcpAuth } from "../src/auth/auth-wrapper";
 import { nodeToWebHandler } from "./helpers";
 
+const serverInfo = {
+  name: "e2e-server",
+  version: "1.2.3",
+  title: "E2E Server",
+  description: "A server for the end-to-end tests.",
+  websiteUrl: "https://example.com",
+  icons: [{ src: "https://example.com/icon.png", mimeType: "image/png" }],
+};
+
 describe("e2e", () => {
   let server: Server;
   let endpoint: string;
@@ -94,6 +103,7 @@ describe("e2e", () => {
             subscribe: true,
           },
         },
+        serverInfo,
         verboseLogs: true,
       },
     );
@@ -181,6 +191,10 @@ describe("e2e", () => {
         uri: "test://example/resource",
       },
     ]);
+  });
+
+  it("should report the server's metadata", async () => {
+    expect(client.getServerVersion()).toEqual(serverInfo);
   });
 
   it("should list tools", async () => {
