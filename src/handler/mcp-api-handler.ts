@@ -10,6 +10,7 @@ import type {
   McpErrorEvent,
 } from "../lib/log-helper";
 import { createEvent } from "../lib/log-helper";
+import { getPublicUrl } from "../lib/url";
 import {
   createWebMcpScriptHandler,
   type WebMcpScriptHandlerOptions,
@@ -118,7 +119,7 @@ export function initializeMcpApiHandler(
       experimental_webMcp &&
       (req.method === "GET" || req.method === "HEAD")
     ) {
-      const scriptUrl = new URL(req.url);
+      const scriptUrl = getPublicUrl(req);
       if (scriptUrl.searchParams.has("webmcp-script")) {
         scriptUrl.searchParams.delete("webmcp-script");
         return createWebMcpScriptHandler({
