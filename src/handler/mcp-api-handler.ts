@@ -2,6 +2,7 @@ import {
   createMcpHandler as createSdkMcpHandler,
   McpServer,
   type CreateMcpHandlerOptions as SdkMcpHandlerOptions,
+  type Implementation,
   type ServerOptions as McpServerOptions,
 } from "@modelcontextprotocol/server";
 import type {
@@ -29,12 +30,10 @@ export type McpHandlerOptions = McpServerOptions & {
    */
   maxSubscriptions?: SdkMcpHandlerOptions["maxSubscriptions"];
   /**
-   * Name and version reported to clients during initialization.
+   * Reported to clients during initialization and discovery: name and
+   * version, plus optional title, description, websiteUrl and icons.
    */
-  serverInfo?: {
-    name: string;
-    version: string;
-  };
+  serverInfo?: Implementation;
   /**
    * If true, enables console logging.
    * @default false
