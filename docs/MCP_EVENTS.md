@@ -177,6 +177,19 @@ The application backend is responsible for:
   and invalid return values become a generic protocol error. Explicit
   `ProtocolError`s with the draft's codes retain their code and only fixed,
   allowlisted diagnostic categories; endpoint response content is never returned.
+  For `ResourceExhausted` (`-32013`), the default message is `Resource exhausted`.
+  Set `resourceExhaustedMessage` at registration to provide a fixed, public
+  explanation and recovery instructions, for example:
+
+  ```typescript
+  resourceExhaustedMessage:
+    "This account has reached its webhook limit. Remove an unused webhook and try again.",
+  ```
+
+  This message applies to `-32013` errors from any Events method, including
+  subscription admission and persistence. It must be application-authored text,
+  never a copied adapter error or upstream response. The original error's message
+  and data remain redacted, and all other errors keep their existing behavior.
 
 Adapters receive the verified auth context and an abort signal. Do not retain
 access tokens in subscription records or log them. Storage and delivery must

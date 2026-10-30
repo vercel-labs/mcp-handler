@@ -485,10 +485,61 @@ describe("experimental_registerMcpEvents", () => {
     const app = setup();
     app.prepare.mockRejectedValueOnce(new ProtocolError(-32013, secret));
     const response = await app.rpc("events/subscribe", input());
-    expect(response.error.code).toBe(-32013);
+    expect(response.error).toEqual({
+      code: -32013,
+      message: "Resource exhausted",
+    });
     expect(JSON.stringify(response)).not.toContain(secret);
     expect(app.verifyEndpoint).not.toHaveBeenCalled();
     expect(app.upsert).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["prepare", false],
+    ["prepare", true],
+    ["upsert", false],
+    ["upsert", true],
+  ] as const)(
+    "returns configured quota guidance from %s without exposing adapter details (modern=%s)",
+    async (stage, modern) => {
+      const message =
+        "This account has reached its webhook limit. Remove an unused webhook and try again.";
+      const app = setup({ resourceExhaustedMessage: message });
+      app[stage].mockRejectedValueOnce(
+        new ProtocolError(-32013, `private ${secret}`, { limit: secret }),
+      );
+      const response = await app.rpc(
+        "events/subscribe",
+        input(),
+        "alice",
+        modern,
+      );
+      expect(response.error).toEqual({ code: -32013, message });
+      expect(JSON.stringify(response)).not.toContain(secret);
+      expect(app.records.size).toBe(0);
+      if (stage === "prepare") {
+        expect(app.verifyEndpoint).not.toHaveBeenCalled();
+        expect(app.upsert).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it("keeps other failures redacted when quota guidance is configured", async () => {
+    const app = setup({
+      resourceExhaustedMessage: "Remove an unused webhook.",
+    });
+    app.upsert.mockRejectedValueOnce(
+      new ProtocolError(-32012, secret, { secret }),
+    );
+    expect((await app.rpc("events/subscribe", input())).error).toEqual({
+      code: -32012,
+      message: "Forbidden",
+    });
+    app.upsert.mockRejectedValueOnce(new Error(secret));
+    expect((await app.rpc("events/subscribe", input())).error).toEqual({
+      code: -32603,
+      message: "MCP Events operation failed",
+    });
   });
 
   it.each(["", " ", undefined, 123])(

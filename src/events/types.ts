@@ -193,6 +193,13 @@ export interface ExperimentalMcpEventsOptions {
         | Promise<readonly ExperimentalMcpEventDefinition[]>);
   subscriptions: ExperimentalMcpSubscriptionStore;
   delivery: ExperimentalMcpWebhookDelivery;
+  /**
+   * Public guidance returned for ResourceExhausted (-32013) errors. Use a fixed,
+   * application-authored message; never include secrets or upstream responses.
+   * Adapter error messages and data remain redacted.
+   * @default "Resource exhausted"
+   */
+  resourceExhaustedMessage?: string;
   ttl?: {
     /** @default 60000 */
     minMs?: number;
