@@ -5,6 +5,7 @@ import {
   bearerAuthChallengeResponse,
 } from "@modelcontextprotocol/server";
 import { getPublicOrigin } from "../lib/url";
+import { withCors, type CorsOptions } from "../lib/cors";
 
 declare global {
   interface Request {
@@ -23,6 +24,7 @@ export function withMcpAuth(
     resourceMetadataPath = "/.well-known/oauth-protected-resource",
     requiredScopes,
     resourceUrl,
+    cors,
   }: {
     required?: boolean;
     resourceMetadataPath?: string;
@@ -42,9 +44,16 @@ export function withMcpAuth(
      * (X-Forwarded-Host, X-Forwarded-Proto, Forwarded) or falls back to req.url.
      */
     resourceUrl?: string;
+    /**
+     * Adds CORS headers to every response, including `401`/`403` challenges
+     * (with `WWW-Authenticate` exposed), and answers `OPTIONS` preflights
+     * before token verification, since browsers never send credentials on a
+     * preflight. Off by default. See `cors` in `createMcpHandler`'s options.
+     */
+    cors?: boolean | CorsOptions;
   } = {},
 ) {
-  return async (req: Request) => {
+  const authHandler = async (req: Request) => {
     const origin = resourceUrl ?? getPublicOrigin(req);
     const resourceMetadataUrl = `${origin}${resourceMetadataPath}`;
     const challengeOptions = { requiredScopes, resourceMetadataUrl };
@@ -115,4 +124,6 @@ export function withMcpAuth(
       return bearerAuthChallengeResponse(error, challengeOptions);
     }
   };
+
+  return cors ? withCors(authHandler, cors) : authHandler;
 }

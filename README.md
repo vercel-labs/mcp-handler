@@ -87,6 +87,10 @@ For stdio-only clients, use [mcp-remote](https://www.npmjs.com/package/mcp-remot
 }
 ```
 
+Browser-based clients on another origin (MCP Apps hosts, inspectors) need CORS:
+set `cors: true` or `cors: { origin: [...] }` and export the handler for
+`OPTIONS` too. See [Browser Clients](docs/ADVANCED.md#browser-clients-cors).
+
 ## Protocol Support
 
 - **2026-07-28** (current): served natively — stateless, no sessions, per-request `_meta` envelope, `server/discover`.
