@@ -60,6 +60,9 @@ export function withMcpAuth(
     try {
       authInfo = await verifyToken(req, bearerToken);
     } catch (error) {
+      if (OAuthError.isInstance(error)) {
+        return bearerAuthChallengeResponse(error, challengeOptions);
+      }
       console.error("Unexpected error authenticating bearer token:", error);
       return bearerAuthChallengeResponse(
         new OAuthError(OAuthErrorCode.InvalidToken, "Invalid token"),
