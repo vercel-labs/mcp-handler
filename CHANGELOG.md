@@ -1,5 +1,12 @@
 # mcp-handler
 
+## 2.3.1
+
+### Patch Changes
+
+- d7771d4: Return `401 invalid_token` for expired tokens before evaluating required scopes, including tokens at their expiration time. Document and test the existing scope challenges and retry flow for step-up authorization.
+- 4509edd: Respect an `OAuthError` thrown by `verifyToken` in `withMcpAuth`: the response now uses its own code and status (for example `403 insufficient_scope` or `500 server_error`) and the error is no longer logged. Untyped errors are still logged and answered with `401 invalid_token`.
+
 ## 2.3.0
 
 ### Minor Changes
