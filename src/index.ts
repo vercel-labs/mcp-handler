@@ -4,6 +4,14 @@ export type { McpHandlerOptions, WebMcpOptions } from "./handler";
 
 export { experimental_registerMcpEvents } from "./events/register";
 export {
+  experimental_verifyMcpWebhookEndpoint,
+  experimental_deliverMcpEvent,
+} from "./events/webhook";
+export type {
+  ExperimentalMcpEventDeliveryOptions,
+  ExperimentalMcpWebhookResult,
+} from "./events/webhook";
+export {
   experimental_validateMcpEventDelivery,
   ExperimentalMcpEventDeliveryError,
 } from "./events/validate-delivery";
