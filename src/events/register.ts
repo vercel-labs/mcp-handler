@@ -49,6 +49,9 @@ export function experimental_registerMcpEvents(
     );
   registered.add(server);
 
+  const safe = <T>(run: () => Promise<T>): Promise<T> =>
+    runSafely(run, options.resourceExhaustedMessage);
+
   // The SDK preserves extension capabilities but does not yet type events.
   server.server.registerCapabilities({ events: {} } as ServerCapabilities);
 
@@ -290,7 +293,10 @@ async function subscriptionKey(
   return { id, principal, name, arguments: args, url };
 }
 
-async function safe<T>(run: () => Promise<T>): Promise<T> {
+async function runSafely<T>(
+  run: () => Promise<T>,
+  resourceExhaustedMessage = "Resource exhausted",
+): Promise<T> {
   try {
     return await run();
   } catch (error) {
@@ -303,11 +309,11 @@ async function safe<T>(run: () => Promise<T>): Promise<T> {
         [-32602]: "Invalid event parameters",
         [-32011]: "Event or subscription not found",
         [-32012]: "Forbidden",
-        [-32013]: "Resource exhausted",
+        [-32013]: resourceExhaustedMessage,
         [-32014]: "Unsupported event option",
         [-32015]: "Callback verification failed",
       };
-      // Only fixed categories cross the wire, including for intentional adapter errors.
+      // Adapter messages/data stay private; quota guidance comes only from configuration.
       const data = error.data as
         | { reason?: unknown; kind?: unknown; feature?: unknown }
         | undefined;
