@@ -29,7 +29,8 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "skills"
   ],
   "repository": {
     "type": "git",
