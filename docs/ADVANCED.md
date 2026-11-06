@@ -46,7 +46,7 @@ export { handler as GET, handler as POST };
 
 ```typescript
 type McpHandlerOptions = ServerOptions & {
-  serverInfo?: { name: string; version: string }; // Reported to clients during initialization
+  serverInfo?: Implementation; // name, version, and optional title, description, websiteUrl, icons
   verboseLogs?: boolean; // Enable debug logging
   onEvent?: (event: McpEvent) => void; // Analytics/debugging callback
   maxSubscriptions?: number; // Maximum subscriptions/listen streams; 0 disables them
