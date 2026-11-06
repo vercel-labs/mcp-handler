@@ -108,6 +108,27 @@ const authHandler = withMcpAuth(handler, verifyAuth, {
 
 See the [complete cookie-auth route](../examples/auth-cookie/route.ts) and the [WebMCP bridge guide](WEBMCP.md).
 
+## Browser clients on other origins
+
+To let browser-based MCP clients on other origins call an authenticated
+server, pass `cors` to `withMcpAuth` (not to `createMcpHandler`). The wrapper
+then answers `OPTIONS` preflights before checking the token, since browsers
+never send credentials on a preflight, and adds the CORS headers to the
+`401`/`403` challenges with `WWW-Authenticate` exposed, so the client can find
+your protected resource metadata.
+
+```typescript
+const authHandler = withMcpAuth(handler, verifyToken, {
+  required: true,
+  cors: { origin: ["https://inspector.example.com"] },
+});
+
+export { authHandler as GET, authHandler as POST, authHandler as OPTIONS };
+```
+
+The options are the same as `createMcpHandler`'s `cors` (see
+[Browser Clients](ADVANCED.md#browser-clients-cors)).
+
 ## OAuth Protected Resource Metadata
 
 Create `app/.well-known/oauth-protected-resource/route.ts`:

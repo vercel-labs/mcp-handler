@@ -1,6 +1,7 @@
 // Re-export the framework-agnostic HTTP adapter
 export { default as createMcpHandler } from "./handler";
 export type { McpHandlerOptions, WebMcpOptions } from "./handler";
+export type { CorsOptions } from "./lib/cors";
 
 export { experimental_registerMcpEvents } from "./events/register";
 export {

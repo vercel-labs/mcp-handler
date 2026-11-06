@@ -10,6 +10,7 @@ import type {
   McpErrorEvent,
 } from "../lib/log-helper";
 import { createEvent } from "../lib/log-helper";
+import { withCors, type CorsOptions } from "../lib/cors";
 import {
   createWebMcpScriptHandler,
   type WebMcpScriptHandlerOptions,
@@ -53,6 +54,14 @@ export type McpHandlerOptions = McpServerOptions & {
    * @experimental WebMCP is an early-stage browser API.
    */
   experimental_webMcp?: WebMcpOptions;
+  /**
+   * Adds CORS headers and answers `OPTIONS` preflights so browser-based MCP
+   * clients on other origins can call the handler. `true` allows any origin.
+   * Off by default. When wrapping the handler with `withMcpAuth`, pass this
+   * to `withMcpAuth` instead so its preflights and `401` challenges carry the
+   * headers too.
+   */
+  cors?: boolean | CorsOptions;
 };
 
 export function initializeMcpApiHandler(
@@ -70,6 +79,7 @@ export function initializeMcpApiHandler(
     onEvent,
     maxSubscriptions,
     experimental_webMcp,
+    cors,
     ...mcpServerOptions
   } = options;
 
@@ -113,7 +123,7 @@ export function initializeMcpApiHandler(
     },
   );
 
-  return async function mcpApiHandler(req: Request): Promise<Response> {
+  async function mcpApiHandler(req: Request): Promise<Response> {
     if (
       experimental_webMcp &&
       (req.method === "GET" || req.method === "HEAD")
@@ -181,7 +191,9 @@ export function initializeMcpApiHandler(
       emitError(error instanceof Error ? error : new Error(String(error)));
       throw error;
     }
-  };
+  }
+
+  return cors ? withCors(mcpApiHandler, cors) : mcpApiHandler;
 }
 
 function redactEventSecret(body: object): object {
