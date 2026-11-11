@@ -26,6 +26,14 @@
       },
       "import": "./dist/index.mjs",
       "require": "./dist/index.js"
+    },
+    "./otel": {
+      "types": {
+        "import": "./dist/otel/index.d.mts",
+        "require": "./dist/otel/index.d.ts"
+      },
+      "import": "./dist/otel/index.mjs",
+      "require": "./dist/otel/index.js"
     }
   },
   "files": [
@@ -63,7 +71,16 @@
     "@changesets/cli": "^2.27.12",
     "@modelcontextprotocol/client": "^2.0.0",
     "@modelcontextprotocol/server": "^2.0.0",
+    "@opentelemetry/api": "1.9.0",
+    "@opentelemetry/api-logs": "^0.218.0",
+    "@opentelemetry/context-async-hooks": "^2",
+    "@opentelemetry/instrumentation": "^0.218.0",
+    "@opentelemetry/resources": "^2",
+    "@opentelemetry/sdk-logs": "^0.218.0",
+    "@opentelemetry/sdk-metrics": "^2",
+    "@opentelemetry/sdk-trace-base": "^2",
     "@types/node": "^22.15.8",
+    "@vercel/otel": "^2.3.0",
     "tsup": "^8.0.0",
     "typescript": "^5.0.0",
     "vitest": "^3.2.1",
@@ -71,13 +88,21 @@
   },
   "peerDependencies": {
     "@modelcontextprotocol/server": "^2.0.0",
-    "next": ">=13.0.0"
+    "next": ">=13.0.0",
+    "@opentelemetry/api": "^1.9.0",
+    "@vercel/otel": ">=1.11.0"
   },
   "peerDependenciesMeta": {
     "@modelcontextprotocol/server": {
       "optional": false
     },
     "next": {
+      "optional": true
+    },
+    "@opentelemetry/api": {
+      "optional": true
+    },
+    "@vercel/otel": {
       "optional": true
     }
   },
