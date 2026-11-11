@@ -57,7 +57,7 @@ function legacyRequest(body: unknown, headers: Record<string, string> = {}) {
   });
 }
 
-function message(method: string, params: unknown = {}, id = 7) {
+function message(method: string, params: unknown = {}, id: string | number = 7) {
   return { jsonrpc: "2.0", id, method, params };
 }
 
@@ -231,9 +231,8 @@ describe("MCP message spans", () => {
     );
   });
 
-  it("continues a sampled client trace from params._meta, linking the request", async () => {
+  it("links a sampled client trace from params._meta, keeping the request as parent", async () => {
     const clientTraceId = "4bf92f3577b34da6a3ce929d0e0e4736";
-    const clientSpanId = "00f067aa0ba902b7";
     const request = trace.getTracer("test").startSpan("POST /api/mcp");
     await context.with(trace.setSpan(context.active(), request), () =>
       send(
@@ -241,7 +240,7 @@ describe("MCP message spans", () => {
         legacyRequest(
           message("tools/list", {
             _meta: {
-              traceparent: `00-${clientTraceId}-${clientSpanId}-01`,
+              traceparent: `00-${clientTraceId}-00f067aa0ba902b7-01`,
               tracestate: "rojo=00f067aa0ba902b7,congo=t61rcWkgMzE",
             },
           }),
@@ -250,15 +249,44 @@ describe("MCP message spans", () => {
     );
     request.end();
 
+    // A client can't make the server record spans its own sampling drops.
     const [span] = mcpSpans();
-    expect(span.spanContext().traceId).toBe(clientTraceId);
-    expect(span.parentSpanContext?.spanId).toBe(clientSpanId);
-    expect(span.spanContext().traceState?.serialize()).toBe(
-      "rojo=00f067aa0ba902b7,congo=t61rcWkgMzE",
+    expect(span.spanContext().traceId).toBe(request.spanContext().traceId);
+    expect(span.parentSpanContext?.spanId).toBe(request.spanContext().spanId);
+    const [link] = span.links;
+    expect(link.context.traceId).toBe(clientTraceId);
+    expect(
+      (link.context.traceState as { serialize(): string }).serialize(),
+    ).toBe("rojo=00f067aa0ba902b7,congo=t61rcWkgMzE");
+  });
+
+  it("leaves out a request ID too long to store", async () => {
+    await send(
+      handlerWith(),
+      legacyRequest(message("tools/list", {}, "x".repeat(200) as never)),
     );
-    expect(span.links.map((link) => link.context.spanId)).toEqual([
-      request.spanContext().spanId,
-    ]);
+
+    const [span] = mcpSpans();
+    expect(span.name).toBe("tools/list");
+    expect(span.attributes).not.toHaveProperty("jsonrpc.request.id");
+  });
+
+  it("serves requests unchanged when the tracer provider throws", async () => {
+    await shutdown();
+    trace.setGlobalTracerProvider({
+      getTracer: () => {
+        throw new Error("broken provider");
+      },
+    });
+
+    const response = await send(
+      handlerWith(),
+      legacyRequest(message("tools/call", { name: "echo", arguments: { message: "hi" } })),
+    );
+
+    expect(response.status).toBe(200);
+    trace.disable();
+    ({ exporter, shutdown } = registerTestTracing());
   });
 
   it("links a client trace the client did not sample, so the message is still counted", async () => {

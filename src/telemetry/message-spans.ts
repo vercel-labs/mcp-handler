@@ -62,6 +62,7 @@ const TARGET_ATTRIBUTES: Record<string, string> = {
 };
 
 const PROTOCOL_VERSION_META_KEY = "io.modelcontextprotocol/protocolVersion";
+const MAX_REQUEST_ID_LENGTH = 128;
 function failureOf(method: string, answer: Answer): MessageFailure | undefined {
   if (answer.error) {
     return rpcErrorOutcome(answer.error.code);
@@ -128,6 +129,19 @@ function recordMessageSpan(
   message: InboundMessage,
   answer?: Answer | "closed",
 ): void {
+  try {
+    writeMessageSpan(tracing, callerAttributes, message, answer);
+  } catch {
+    // A span must never change the server's answer.
+  }
+}
+
+function writeMessageSpan(
+  tracing: McpTracing,
+  callerAttributes: Attributes,
+  message: InboundMessage,
+  answer?: Answer | "closed",
+): void {
   let failure: MessageFailure | undefined;
   if (answer === "closed") {
     failure = { outcome: "request_error", errorType: "cancelled" };
@@ -147,8 +161,12 @@ function recordMessageSpan(
   if (target) {
     attributes[TARGET_ATTRIBUTES[message.method]] = target;
   }
-  if (message.id !== undefined) {
-    attributes["jsonrpc.request.id"] = String(message.id);
+  const requestId = message.id === undefined ? undefined : String(message.id);
+  // IDs are unique per request anyway; the cap only keeps huge ones out.
+  const isStorableId =
+    requestId !== undefined && requestId.length <= MAX_REQUEST_ID_LENGTH;
+  if (isStorableId) {
+    attributes["jsonrpc.request.id"] = requestId;
   }
   const version = protocolVersionOf(message, answer);
   if (version) {
@@ -172,28 +190,24 @@ function recordMessageSpan(
     name = `${message.method} ${target}`;
   }
 
-  try {
-    const { parentContext, links } = selectSpanParent(
-      message.parentContext,
-      message.clientTrace,
-    );
-    const span = tracing.tracer.startSpan(
-      name,
-      {
-        kind: SPAN_KIND_SERVER,
-        startTime: message.startTime,
-        attributes,
-        links,
-      },
-      parentContext,
-    );
-    if (isServerError) {
-      span.setStatus({ code: SPAN_STATUS_ERROR });
-    }
-    span.end();
-  } catch {
-    // A span must never change the server's answer.
+  const { parentContext, links } = selectSpanParent(
+    message.parentContext,
+    message.clientTrace,
+  );
+  const span = tracing.tracer.startSpan(
+    name,
+    {
+      kind: SPAN_KIND_SERVER,
+      startTime: message.startTime,
+      attributes,
+      links,
+    },
+    parentContext,
+  );
+  if (isServerError) {
+    span.setStatus({ code: SPAN_STATUS_ERROR });
   }
+  span.end();
 }
 
 function readInboundMessage(
@@ -247,22 +261,7 @@ export function traceMcpMessages(
     const send = transport.send.bind(transport);
 
     transport.onmessage = (received, extra) => {
-      const message = readInboundMessage(received, tracing);
-      if (message?.id !== undefined) {
-        // Before dispatch: the server answers an unknown method synchronously.
-        const pending = unanswered.get(message.id);
-        if (pending) {
-          // The first collision marks the message already waiting; later ones
-          // only need to mark themselves.
-          if (pending.messages.length === 1) {
-            pending.messages[0].ambiguous = true;
-          }
-          message.ambiguous = true;
-          pending.messages.push(message);
-        } else {
-          unanswered.set(message.id, { messages: [message], next: 0 });
-        }
-      }
+      const message = trackInbound(received);
       onmessage?.(received, extra);
       const isNotification = message !== undefined && message.id === undefined;
       if (isNotification) {
@@ -270,23 +269,59 @@ export function traceMcpMessages(
       }
     };
 
-    transport.send = (sent, options) => {
-      const isAnswer =
-        !("method" in sent) && "id" in sent && sent.id !== undefined;
-      if (isAnswer) {
-        const id = sent.id as RequestId;
-        const pending = unanswered.get(id);
-        let message: InboundMessage | undefined;
-        if (pending) {
-          message = pending.messages[pending.next];
-          pending.next += 1;
-          if (pending.next >= pending.messages.length) {
-            unanswered.delete(id);
+    /** Reads and queues an inbound message; never throws. */
+    function trackInbound(received: JSONRPCMessage): InboundMessage | undefined {
+      try {
+        const message = readInboundMessage(received, tracing);
+        if (message?.id !== undefined) {
+          // Before dispatch: the server answers an unknown method synchronously.
+          const pending = unanswered.get(message.id);
+          if (pending) {
+            // The first collision marks the message already waiting; later ones
+            // only need to mark themselves.
+            if (pending.messages.length === 1) {
+              pending.messages[0].ambiguous = true;
+            }
+            message.ambiguous = true;
+            pending.messages.push(message);
+          } else {
+            unanswered.set(message.id, { messages: [message], next: 0 });
           }
         }
-        if (message) {
-          recordMessageSpan(tracing, callerAttributes, message, sent as Answer);
+        return message;
+      } catch {
+        return undefined;
+      }
+    }
+
+    /** Takes the oldest message waiting for this answer; never throws. */
+    function takeAnswered(sent: JSONRPCMessage): InboundMessage | undefined {
+      try {
+        const isAnswer =
+          !("method" in sent) && "id" in sent && sent.id !== undefined;
+        if (!isAnswer) {
+          return undefined;
         }
+        const id = sent.id as RequestId;
+        const pending = unanswered.get(id);
+        if (!pending) {
+          return undefined;
+        }
+        const message = pending.messages[pending.next];
+        pending.next += 1;
+        if (pending.next >= pending.messages.length) {
+          unanswered.delete(id);
+        }
+        return message;
+      } catch {
+        return undefined;
+      }
+    }
+
+    transport.send = (sent, options) => {
+      const message = takeAnswered(sent);
+      if (message) {
+        recordMessageSpan(tracing, callerAttributes, message, sent as Answer);
       }
       return send(sent, options);
     };

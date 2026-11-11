@@ -1,12 +1,5 @@
 import { ProtocolError } from "@modelcontextprotocol/server";
-import {
-  context,
-  ROOT_CONTEXT,
-  SpanKind,
-  SpanStatusCode,
-  trace,
-  TraceFlags,
-} from "@opentelemetry/api";
+import { context, SpanKind, SpanStatusCode, trace } from "@opentelemetry/api";
 import type { InMemorySpanExporter } from "@opentelemetry/sdk-trace-base";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
@@ -198,23 +191,21 @@ describe("MCP Events spans", () => {
     });
   });
 
-  it("puts every span of a subscription on the client's trace", async () => {
+  it("puts every span of a subscription on the request's trace, linking the client's", async () => {
     const clientTraceId = "4bf92f3577b34da6a3ce929d0e0e4736";
-    // The HTTP request's trace is not sampled; the client's trace is.
-    const unsampledRequest = trace.setSpanContext(ROOT_CONTEXT, {
-      traceId: "0af7651916cd43dd8448eb211c80319c",
-      spanId: "b7ad6b7169203331",
-      traceFlags: TraceFlags.NONE,
-    });
+    const request = trace.getTracer("test").startSpan("POST /mcp");
 
-    await context.with(unsampledRequest, () =>
+    await context.with(trace.setSpan(context.active(), request), () =>
       setup()("events/subscribe", {
         ...subscribeParams,
         _meta: { traceparent: `00-${clientTraceId}-00f067aa0ba902b7-01` },
       }),
     );
+    request.end();
 
-    const spans = exporter.getFinishedSpans();
+    const spans = exporter
+      .getFinishedSpans()
+      .filter((span) => span.name !== "POST /mcp");
     expect(spans.map((span) => span.name).sort()).toEqual([
       "events/subscribe",
       "mcp.event.subscription prepare",
@@ -222,7 +213,10 @@ describe("MCP Events spans", () => {
       "mcp.event.verify_callback",
     ]);
     for (const span of spans) {
-      expect(span.spanContext().traceId).toBe(clientTraceId);
+      expect(span.spanContext().traceId).toBe(request.spanContext().traceId);
+      expect(span.links.map((link) => link.context.traceId)).toEqual([
+        clientTraceId,
+      ]);
     }
   });
 

@@ -1,9 +1,4 @@
-import {
-  activeSpanContext,
-  TRACE_FLAG_SAMPLED,
-  withRemoteParent,
-  type SpanContext,
-} from "./otel-api";
+import type { SpanContext } from "./otel-api";
 
 /**
  * The client's trace context from an MCP message's `params._meta`, which
@@ -108,33 +103,22 @@ export interface SpanParent {
 }
 
 /**
- * The parent and links of a span for MCP work. As the MCP semantic
- * conventions describe, the client's trace from `params._meta` is the parent
- * and the HTTP request is linked. A trace the client did not sample stays a
- * link instead: a parent-based sampler would drop the span, and Vercel would
- * not count the message.
+ * The parent and links of a span for MCP work: the HTTP request stays the
+ * parent, and the client's trace from `params._meta` is linked.
+ *
+ * The MCP semantic conventions suggest the client's trace as the parent, but
+ * then a client could make the server record (and bill) spans the app's own
+ * sampling would drop, and a trace the client did not sample would drop the
+ * message from Vercel's counts. As a link, the span is recorded exactly when
+ * the request is sampled.
  */
 export function selectSpanParent(
   ambientContext: unknown,
   clientTrace: SpanContext | undefined,
 ): SpanParent {
-  if (!clientTrace) {
-    return { parentContext: ambientContext, links: [] };
-  }
-
-  const isSampled = (clientTrace.traceFlags & TRACE_FLAG_SAMPLED) !== 0;
-  let clientParent: unknown;
-  if (isSampled) {
-    clientParent = withRemoteParent(ambientContext, clientTrace);
-  }
-  if (clientParent === undefined) {
-    return { parentContext: ambientContext, links: [{ context: clientTrace }] };
-  }
-
   const links: Array<{ context: SpanContext }> = [];
-  const requestSpan = activeSpanContext(ambientContext);
-  if (requestSpan) {
-    links.push({ context: requestSpan });
+  if (clientTrace) {
+    links.push({ context: clientTrace });
   }
-  return { parentContext: clientParent, links };
+  return { parentContext: ambientContext, links };
 }

@@ -89,12 +89,16 @@ async function recordStep<T>(
   }
 
   const startTime = Date.now();
-  // The same parent as the request's message span, so a subscription's spans
-  // share the client's trace.
-  const { parentContext, links } = selectSpanParent(
-    telemetry.tracing.activeContext(),
-    clientTraceFrom(request.meta),
-  );
+  // The same parent and links as the request's message span.
+  let parent: ReturnType<typeof selectSpanParent>;
+  try {
+    parent = selectSpanParent(
+      telemetry.tracing.activeContext(),
+      clientTraceFrom(request.meta),
+    );
+  } catch {
+    return run();
+  }
   let step: Partial<StepResult> = {};
   try {
     const result = await run();
@@ -104,21 +108,21 @@ async function recordStep<T>(
     step = { errorType: eventErrorType(error, request.signal) };
     throw error;
   } finally {
-    const attributes: Attributes = {
-      ...telemetry.attributes,
-      ...span.attributes,
-    };
-    if (step.outcome) {
-      attributes[span.outcomeKey] = step.outcome;
-    }
-    if (step.errorType) {
-      attributes["error.type"] = step.errorType;
-    }
     try {
+      const attributes: Attributes = {
+        ...telemetry.attributes,
+        ...span.attributes,
+      };
+      if (step.outcome) {
+        attributes[span.outcomeKey] = step.outcome;
+      }
+      if (step.errorType) {
+        attributes["error.type"] = step.errorType;
+      }
       const written = telemetry.tracing.tracer.startSpan(
         span.name,
-        { kind: span.kind, startTime, attributes, links },
-        parentContext,
+        { kind: span.kind, startTime, attributes, links: parent.links },
+        parent.parentContext,
       );
       if (step.errorType) {
         written.setStatus({ code: SPAN_STATUS_ERROR });

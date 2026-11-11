@@ -75,12 +75,11 @@ other failure does.
 
 When a request carries the client's trace in `params._meta` (the W3C
 `traceparent` and `tracestate` keys SEP-414 defines), the message span and its
-MCP Events spans continue it, and link the HTTP request's span. When the
-client did not sample that trace, they keep the HTTP request as their parent
-and link the client's trace instead, so the message is still recorded. Other
-propagation formats in `params._meta` are not read: on Vercel, `@vercel/otel`'s
-runtime propagator replaces whatever the registered propagators extract with
-the Vercel request's own trace.
+MCP Events spans link it, and keep the HTTP request as their parent. The MCP
+semantic conventions suggest the client's trace as the parent instead, but
+then a client could make your server record spans your own sampling would
+drop. As a link, a span is recorded exactly when the request is sampled, so
+Vercel's counts follow your sampling rule.
 
 `mcp-handler` never records tool arguments, results, error messages, user IDs
 or raw user agents. Tool and prompt names are recorded only when the server

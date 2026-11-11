@@ -55,19 +55,24 @@ export function instrumentMcpServer(
   ctx: McpRequestContext,
   route: string,
 ): void {
-  const tracing = getMcpTracing();
-  if (!tracing) {
-    return;
+  try {
+    const tracing = getMcpTracing();
+    if (!tracing) {
+      return;
+    }
+    const caller = callerAttributes(ctx, route);
+    traceMcpMessages(server, tracing, caller);
+    instrumentedServers.set(server, {
+      tracing,
+      attributes: {
+        [VERCEL_RPC_ATTRIBUTES.route]: caller[VERCEL_RPC_ATTRIBUTES.route],
+        [VERCEL_RPC_ATTRIBUTES.clientName]:
+          caller[VERCEL_RPC_ATTRIBUTES.clientName],
+      },
+    });
+  } catch {
+    // A broken tracer provider must never break the server.
   }
-  const caller = callerAttributes(ctx, route);
-  traceMcpMessages(server, tracing, caller);
-  instrumentedServers.set(server, {
-    tracing,
-    attributes: {
-      [VERCEL_RPC_ATTRIBUTES.route]: caller[VERCEL_RPC_ATTRIBUTES.route],
-      [VERCEL_RPC_ATTRIBUTES.clientName]: caller[VERCEL_RPC_ATTRIBUTES.clientName],
-    },
-  });
 }
 
 /**
