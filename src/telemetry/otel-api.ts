@@ -13,8 +13,12 @@
 const GLOBAL_API_KEY = Symbol.for("opentelemetry.js.api.1");
 const TRACER_NAME = "mcp-handler";
 
+/** `SpanKind.INTERNAL` in `@opentelemetry/api`. */
+export const SPAN_KIND_INTERNAL = 0;
 /** `SpanKind.SERVER` in `@opentelemetry/api`. */
 export const SPAN_KIND_SERVER = 1;
+/** `SpanKind.CLIENT` in `@opentelemetry/api`. */
+export const SPAN_KIND_CLIENT = 2;
 /** `SpanStatusCode.ERROR` in `@opentelemetry/api`. */
 export const SPAN_STATUS_ERROR = 2;
 

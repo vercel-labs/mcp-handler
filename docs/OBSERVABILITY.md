@@ -73,6 +73,28 @@ answered with a result, so names a client invents never become attributes.
 HTTP requests that never become an MCP message, such as a request rejected by
 `withMcpAuth`, get no MCP span.
 
+## MCP Events
+
+With [MCP Events](MCP_EVENTS.md), `events/list`, `events/subscribe` and
+`events/unsubscribe` are MCP messages like any other. Each subscription also
+gets a span for every call `mcp-handler` makes to your adapters:
+
+| Span                                   | Kind       | Attributes                                                                                                                  |
+| -------------------------------------- | ---------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `mcp.event.subscription prepare`       | `INTERNAL` | `vercel.mcp.subscription.action`, `vercel.mcp.subscription.outcome` (`prepared`), `vercel.mcp.event.type`                    |
+| `mcp.event.verify_callback`            | `CLIENT`   | `vercel.mcp.event.outcome` (`verified` or `failed`), `vercel.mcp.event.type`, and the failure reason (`timeout`, `http_4xx`, …) as `error.type` |
+| `mcp.event.subscription subscribe`     | `INTERNAL` | `vercel.mcp.subscription.outcome` (`subscribed`), `vercel.mcp.event.type`                                                   |
+| `mcp.event.subscription unsubscribe`   | `INTERNAL` | `vercel.mcp.subscription.outcome` (`removed` or `not_found`)                                                                 |
+
+Every event span also carries `vercel.rpc.client.name` and `vercel.rpc.route`.
+A step that throws gets a short `error.type` (`rate_limited`, `forbidden`,
+`not_found`, `cancelled` or `internal_error`). Callback URLs, subscription IDs,
+secrets, arguments and error messages are never recorded, and the event name
+is recorded only once it matched your catalog.
+
+Event delivery happens in your own worker, so `mcp-handler` writes no delivery
+spans.
+
 ## Options
 
 ```ts

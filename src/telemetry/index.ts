@@ -1,7 +1,11 @@
 import type { McpRequestContext, McpServer } from "@modelcontextprotocol/server";
 import { mcpClientName, protocolVersion, VERCEL_RPC_ATTRIBUTES } from "./attributes";
+import type { EventTelemetry } from "./event-spans";
 import { traceMcpMessages } from "./message-spans";
 import { getMcpTracing, type Attributes } from "./otel-api";
+
+/** Instrumented servers, so MCP Events can write its spans with the same caller. */
+const instrumentedServers = new WeakMap<McpServer, EventTelemetry>();
 
 /** Options for the MCP spans `createMcpHandler` writes. */
 export interface McpTelemetryOptions {
@@ -55,5 +59,21 @@ export function instrumentMcpServer(
   if (!tracing) {
     return;
   }
-  traceMcpMessages(server, tracing, callerAttributes(ctx, route));
+  const caller = callerAttributes(ctx, route);
+  traceMcpMessages(server, tracing, caller);
+  instrumentedServers.set(server, {
+    tracing,
+    attributes: {
+      [VERCEL_RPC_ATTRIBUTES.route]: caller[VERCEL_RPC_ATTRIBUTES.route],
+      [VERCEL_RPC_ATTRIBUTES.clientName]: caller[VERCEL_RPC_ATTRIBUTES.clientName],
+    },
+  });
+}
+
+/**
+ * The event span context for a server `createMcpHandler` instrumented, or
+ * `undefined` when telemetry is off or no tracer provider is registered.
+ */
+export function eventTelemetryFor(server: McpServer): EventTelemetry | undefined {
+  return instrumentedServers.get(server);
 }

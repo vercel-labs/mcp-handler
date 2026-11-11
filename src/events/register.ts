@@ -12,6 +12,12 @@ import {
   webhookFailures,
 } from "./schemas";
 import { canonical } from "./json";
+import { eventTelemetryFor } from "../telemetry";
+import {
+  eventTypeAttributes,
+  recordCallbackVerification,
+  recordSubscriptionChange,
+} from "../telemetry/event-spans";
 import type {
   ExperimentalMcpEventContext,
   ExperimentalMcpEventDefinition,
@@ -48,6 +54,7 @@ export function experimental_registerMcpEvents(
       "MCP Events TTLs must satisfy 0 < minMs <= defaultMs <= maxMs",
     );
   registered.add(server);
+  const telemetry = eventTelemetryFor(server);
 
   // The SDK preserves extension capabilities but does not yet type events.
   server.server.registerCapabilities({ events: {} } as ServerCapabilities);
@@ -169,19 +176,36 @@ export function experimental_registerMcpEvents(
           params.delivery.url,
         );
         auth.signal.throwIfAborted();
-        const operationId = await options.subscriptions.prepare(key, auth);
+        // The name was checked against the event catalog above.
+        const eventAttributes = eventTypeAttributes(event.name);
+        const operationId = await recordSubscriptionChange(
+          telemetry,
+          "prepare",
+          eventAttributes,
+          () => options.subscriptions.prepare(key, auth),
+          () => ({ outcome: "prepared" }),
+        );
         if (typeof operationId !== "string" || !operationId.trim()) {
           throw new Error("Invalid subscription operation");
         }
         auth.signal.throwIfAborted();
-        const verification = await options.delivery.verifyEndpoint(
-          { ...key, secret: params.delivery.secret },
-          auth,
+        const verification = await recordCallbackVerification(
+          telemetry,
+          eventAttributes,
+          () =>
+            options.delivery.verifyEndpoint(
+              { ...key, secret: params.delivery.secret },
+              auth,
+            ),
+          (result) => {
+            if (result.verified === true) {
+              return { outcome: "verified" };
+            }
+            return { outcome: "failed", errorType: webhookFailure(result.reason) };
+          },
         );
         if (verification.verified !== true) {
-          const reason = webhookFailures.includes(verification.reason)
-            ? verification.reason
-            : "challenge_failed";
+          const reason = webhookFailure(verification.reason);
           throw new ProtocolError(-32015, "Callback verification failed", {
             reason,
           });
@@ -193,18 +217,25 @@ export function experimental_registerMcpEvents(
             : Math.max(minMs, Math.min(params.ttlMs ?? defaultMs, maxMs));
         const refreshBefore =
           ttl === null ? null : new Date(Date.now() + ttl).toISOString();
-        const state = await options.subscriptions.upsert(
-          {
-            ...key,
-            secret: params.delivery.secret,
-            refreshBefore,
-            cursor: params.cursor ?? null,
-            ...(params.maxAgeMs !== undefined
-              ? { maxAgeMs: params.maxAgeMs }
-              : {}),
-          },
-          auth,
-          operationId,
+        const state = await recordSubscriptionChange(
+          telemetry,
+          "subscribe",
+          eventAttributes,
+          () =>
+            options.subscriptions.upsert(
+              {
+                ...key,
+                secret: params.delivery.secret,
+                refreshBefore,
+                cursor: params.cursor ?? null,
+                ...(params.maxAgeMs !== undefined
+                  ? { maxAgeMs: params.maxAgeMs }
+                  : {}),
+              },
+              auth,
+              operationId,
+            ),
+          () => ({ outcome: "subscribed" }),
         );
         const result = await subscriptionState["~standard"].validate(state);
         if (result.issues) throw new Error("Invalid subscription state");
@@ -227,7 +258,20 @@ export function experimental_registerMcpEvents(
         );
         // Cleanup must remain possible after an event is removed or its schema changes.
         auth.signal.throwIfAborted();
-        if (!(await options.subscriptions.remove(key, auth))) {
+        // The name isn't checked against the catalog here, so it isn't recorded.
+        const removed = await recordSubscriptionChange(
+          telemetry,
+          "unsubscribe",
+          {},
+          () => options.subscriptions.remove(key, auth),
+          (found) => {
+            if (found) {
+              return { outcome: "removed" };
+            }
+            return { outcome: "not_found", errorType: "not_found" };
+          },
+        );
+        if (!removed) {
           throw new ProtocolError(-32011, "Subscription not found", {
             kind: "subscription",
           });
@@ -235,6 +279,12 @@ export function experimental_registerMcpEvents(
         return {};
       }),
   );
+}
+
+/** The adapter's failure reason, or `challenge_failed` for anything else. */
+function webhookFailure(reason: unknown) {
+  const known = webhookFailures.find((failure) => failure === reason);
+  return known ?? "challenge_failed";
 }
 
 function validateUrl(value: string): void {
