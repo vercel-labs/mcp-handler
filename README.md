@@ -117,6 +117,7 @@ See [Authorization](docs/AUTHORIZATION.md) for wiring details.
 - [Authorization](docs/AUTHORIZATION.md) - OAuth and token verification
 - [Advanced Usage](docs/ADVANCED.md) - Dynamic routing, Nuxt, configuration options
 - [WebMCP Bridge](docs/WEBMCP.md) - Expose allowlisted tools to in-page agents (experimental)
+- [Observability](docs/OBSERVABILITY.md) - OpenTelemetry spans for Vercel's MCP observability
 - [MCP Events](docs/MCP_EVENTS.md) - Register draft webhook subscription methods with application-owned storage and delivery (experimental)
 
 ## Features
@@ -124,6 +125,7 @@ See [Authorization](docs/AUTHORIZATION.md) for wiring details.
 - **Framework-agnostic**: Web-standard `Request` and `Response` handler
 - **Framework compatibility**: Next.js, Nuxt/Nitro, SvelteKit, Hono, and other Fetch-compatible frameworks
 - **Dual-era protocol support**: 2026-07-28 (stateless) and 2025-era Streamable HTTP from one handler
+- **Observability**: one OpenTelemetry span per MCP message, read by Vercel's MCP observability
 - **TypeScript Support**: Full type definitions included
 
 ## Requirements

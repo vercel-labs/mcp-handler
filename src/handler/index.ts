@@ -1,11 +1,12 @@
 import {
   initializeMcpApiHandler,
   type McpHandlerOptions,
+  type McpTelemetryOptions,
   type WebMcpOptions,
 } from "./mcp-api-handler";
 import type { McpServer } from "@modelcontextprotocol/server";
 
-export type { McpHandlerOptions, WebMcpOptions };
+export type { McpHandlerOptions, McpTelemetryOptions, WebMcpOptions };
 
 /**
  * Creates a MCP handler that can be used to handle MCP requests.
