@@ -213,11 +213,16 @@ describe("MCP message spans", () => {
         // the slow call and the slow call's result to the client's name.
         message("tools/call", { name: "slow", arguments: {} }, 1),
         message("tools/call", { name: "private-tool", arguments: {} }, 1),
+        message("tools/call", { name: "echo", arguments: { message: "hi" } }, 1),
       ]),
     );
 
     const spans = mcpSpans();
-    expect(spans.map((span) => span.name)).toEqual(["tools/call", "tools/call"]);
+    expect(spans.map((span) => span.name)).toEqual([
+      "tools/call",
+      "tools/call",
+      "tools/call",
+    ]);
     for (const span of spans) {
       expect(span.attributes).not.toHaveProperty("gen_ai.tool.name");
     }
@@ -235,7 +240,10 @@ describe("MCP message spans", () => {
         handlerWith(),
         legacyRequest(
           message("tools/list", {
-            _meta: { traceparent: `00-${clientTraceId}-${clientSpanId}-01` },
+            _meta: {
+              traceparent: `00-${clientTraceId}-${clientSpanId}-01`,
+              tracestate: "rojo=00f067aa0ba902b7,congo=t61rcWkgMzE",
+            },
           }),
         ),
       ),
@@ -245,6 +253,9 @@ describe("MCP message spans", () => {
     const [span] = mcpSpans();
     expect(span.spanContext().traceId).toBe(clientTraceId);
     expect(span.parentSpanContext?.spanId).toBe(clientSpanId);
+    expect(span.spanContext().traceState?.serialize()).toBe(
+      "rojo=00f067aa0ba902b7,congo=t61rcWkgMzE",
+    );
     expect(span.links.map((link) => link.context.spanId)).toEqual([
       request.spanContext().spanId,
     ]);

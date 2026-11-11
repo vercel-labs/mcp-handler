@@ -12,15 +12,13 @@ import {
   type MessageFailure,
 } from "./attributes";
 import {
-  activeSpanContext,
   SPAN_KIND_SERVER,
   SPAN_STATUS_ERROR,
-  TRACE_FLAG_SAMPLED,
-  withRemoteParent,
   type Attributes,
   type McpTracing,
   type SpanContext,
 } from "./otel-api";
+import { clientTraceFrom, selectSpanParent } from "./trace-context";
 
 /**
  * One `SERVER` span that sets `mcp.method.name` per MCP request or
@@ -64,31 +62,6 @@ const TARGET_ATTRIBUTES: Record<string, string> = {
 };
 
 const PROTOCOL_VERSION_META_KEY = "io.modelcontextprotocol/protocolVersion";
-const TRACEPARENT = /^([0-9a-f]{2})-([0-9a-f]{32})-([0-9a-f]{16})-([0-9a-f]{2})$/;
-
-/** A W3C `traceparent`, or `undefined` when it is missing or invalid. */
-function parseTraceparent(value: unknown): SpanContext | undefined {
-  if (typeof value !== "string") {
-    return undefined;
-  }
-  const match = TRACEPARENT.exec(value.trim());
-  if (!match) {
-    return undefined;
-  }
-  const [, version, traceId, spanId, flags] = match;
-  const isValid =
-    version !== "ff" && !/^0+$/.test(traceId) && !/^0+$/.test(spanId);
-  if (!isValid) {
-    return undefined;
-  }
-  return {
-    traceId,
-    spanId,
-    traceFlags: parseInt(flags, 16),
-    isRemote: true,
-  };
-}
-
 function failureOf(method: string, answer: Answer): MessageFailure | undefined {
   if (answer.error) {
     return rpcErrorOutcome(answer.error.code);
@@ -138,41 +111,6 @@ function protocolVersionOf(
     return undefined;
   }
   return message.protocolVersion;
-}
-
-/**
- * The parent and links of the message's span. As the MCP semantic conventions
- * describe, the client's trace from `params._meta` is the parent and the HTTP
- * request is linked. A trace the client did not sample stays a link instead:
- * a parent-based sampler would drop the span, and Vercel would not count the
- * message.
- */
-function spanParent(message: InboundMessage): {
-  parentContext: unknown;
-  links: Array<{ context: SpanContext }>;
-} {
-  const clientTrace = message.clientTrace;
-  if (!clientTrace) {
-    return { parentContext: message.parentContext, links: [] };
-  }
-
-  const isSampled = (clientTrace.traceFlags & TRACE_FLAG_SAMPLED) !== 0;
-  const clientParent = isSampled
-    ? withRemoteParent(message.parentContext, clientTrace)
-    : undefined;
-  if (clientParent === undefined) {
-    return {
-      parentContext: message.parentContext,
-      links: [{ context: clientTrace }],
-    };
-  }
-
-  const links: Array<{ context: SpanContext }> = [];
-  const requestSpan = activeSpanContext(message.parentContext);
-  if (requestSpan) {
-    links.push({ context: requestSpan });
-  }
-  return { parentContext: clientParent, links };
 }
 
 /**
@@ -235,7 +173,10 @@ function recordMessageSpan(
   }
 
   try {
-    const { parentContext, links } = spanParent(message);
+    const { parentContext, links } = selectSpanParent(
+      message.parentContext,
+      message.clientTrace,
+    );
     const span = tracing.tracer.startSpan(
       name,
       {
@@ -269,7 +210,7 @@ function readInboundMessage(
     name: params?.name,
     ambiguous: false,
     protocolVersion: protocolVersion(meta?.[PROTOCOL_VERSION_META_KEY]),
-    clientTrace: parseTraceparent(meta?.traceparent),
+    clientTrace: clientTraceFrom(meta),
     startTime: Date.now(),
     parentContext: tracing.activeContext(),
   };
@@ -295,8 +236,13 @@ export function traceMcpMessages(
   const connect = server.connect.bind(server);
   server.connect = async (transport) => {
     await connect(transport);
-    // Messages waiting for an answer, oldest first for each ID.
-    const unanswered = new Map<RequestId, InboundMessage[]>();
+    // Messages waiting for an answer, oldest first for each ID. Answers take
+    // them in order through a cursor rather than `shift()`, so a batch that
+    // repeats one ID stays linear.
+    const unanswered = new Map<
+      RequestId,
+      { messages: InboundMessage[]; next: number }
+    >();
     const { onmessage, onclose } = transport;
     const send = transport.send.bind(transport);
 
@@ -304,12 +250,18 @@ export function traceMcpMessages(
       const message = readInboundMessage(received, tracing);
       if (message?.id !== undefined) {
         // Before dispatch: the server answers an unknown method synchronously.
-        const pending = unanswered.get(message.id) ?? [];
-        pending.push(message);
-        if (pending.length > 1) {
-          for (const sameId of pending) sameId.ambiguous = true;
+        const pending = unanswered.get(message.id);
+        if (pending) {
+          // The first collision marks the message already waiting; later ones
+          // only need to mark themselves.
+          if (pending.messages.length === 1) {
+            pending.messages[0].ambiguous = true;
+          }
+          message.ambiguous = true;
+          pending.messages.push(message);
+        } else {
+          unanswered.set(message.id, { messages: [message], next: 0 });
         }
-        unanswered.set(message.id, pending);
       }
       onmessage?.(received, extra);
       const isNotification = message !== undefined && message.id === undefined;
@@ -324,9 +276,13 @@ export function traceMcpMessages(
       if (isAnswer) {
         const id = sent.id as RequestId;
         const pending = unanswered.get(id);
-        const message = pending?.shift();
-        if (pending?.length === 0) {
-          unanswered.delete(id);
+        let message: InboundMessage | undefined;
+        if (pending) {
+          message = pending.messages[pending.next];
+          pending.next += 1;
+          if (pending.next >= pending.messages.length) {
+            unanswered.delete(id);
+          }
         }
         if (message) {
           recordMessageSpan(tracing, callerAttributes, message, sent as Answer);
@@ -337,7 +293,7 @@ export function traceMcpMessages(
 
     transport.onclose = () => {
       for (const pending of unanswered.values()) {
-        for (const message of pending) {
+        for (const message of pending.messages.slice(pending.next)) {
           recordMessageSpan(tracing, callerAttributes, message, "closed");
         }
       }

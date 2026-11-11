@@ -1,5 +1,12 @@
 import { ProtocolError } from "@modelcontextprotocol/server";
-import { SpanKind, SpanStatusCode } from "@opentelemetry/api";
+import {
+  context,
+  ROOT_CONTEXT,
+  SpanKind,
+  SpanStatusCode,
+  trace,
+  TraceFlags,
+} from "@opentelemetry/api";
 import type { InMemorySpanExporter } from "@opentelemetry/sdk-trace-base";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
@@ -62,10 +69,11 @@ function setup(
         : undefined,
   );
 
-  return async (method: string, params: unknown) => {
+  return async (method: string, params: unknown, signal?: AbortSignal) => {
     const response = await handler(
       new Request("https://server.example/mcp", {
         method: "POST",
+        signal,
         headers: {
           "content-type": "application/json",
           accept: "application/json, text/event-stream",
@@ -188,6 +196,57 @@ describe("MCP Events spans", () => {
       "vercel.mcp.subscription.outcome": "not_found",
       "error.type": "not_found",
     });
+  });
+
+  it("puts every span of a subscription on the client's trace", async () => {
+    const clientTraceId = "4bf92f3577b34da6a3ce929d0e0e4736";
+    // The HTTP request's trace is not sampled; the client's trace is.
+    const unsampledRequest = trace.setSpanContext(ROOT_CONTEXT, {
+      traceId: "0af7651916cd43dd8448eb211c80319c",
+      spanId: "b7ad6b7169203331",
+      traceFlags: TraceFlags.NONE,
+    });
+
+    await context.with(unsampledRequest, () =>
+      setup()("events/subscribe", {
+        ...subscribeParams,
+        _meta: { traceparent: `00-${clientTraceId}-00f067aa0ba902b7-01` },
+      }),
+    );
+
+    const spans = exporter.getFinishedSpans();
+    expect(spans.map((span) => span.name).sort()).toEqual([
+      "events/subscribe",
+      "mcp.event.subscription prepare",
+      "mcp.event.subscription subscribe",
+      "mcp.event.verify_callback",
+    ]);
+    for (const span of spans) {
+      expect(span.spanContext().traceId).toBe(clientTraceId);
+    }
+  });
+
+  it("records a step the client cancelled as cancelled", async () => {
+    const connection = new AbortController();
+    const prepare = vi.fn(
+      (_key: unknown, { signal }: { signal: AbortSignal }) =>
+        new Promise<string>((_resolve, reject) => {
+          connection.abort();
+          signal.addEventListener("abort", () => reject(signal.reason));
+          if (signal.aborted) reject(signal.reason);
+        }),
+    );
+
+    await setup({ prepare })(
+      "events/subscribe",
+      subscribeParams,
+      connection.signal,
+    ).catch(() => undefined);
+    await vi.waitFor(() => expect(eventSpans()).toHaveLength(1));
+
+    const [span] = eventSpans();
+    expect(span.name).toBe("mcp.event.subscription prepare");
+    expect(span.attributes["error.type"]).toBe("cancelled");
   });
 
   it("writes no event spans when telemetry is off", async () => {

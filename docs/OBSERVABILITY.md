@@ -73,10 +73,14 @@ caller sent a request the server could not serve (`-32700`, `-32600`,
 `-32601`, `-32602` and `-32002`) don't set the span status to `ERROR`. Every
 other failure does.
 
-When a request carries the client's trace in `params._meta.traceparent`, the
-message span continues it, and links the HTTP request's span. When the client
-did not sample that trace, the span keeps the HTTP request as its parent and
-links the client's trace instead, so the message is still recorded.
+When a request carries the client's trace in `params._meta` (the W3C
+`traceparent` and `tracestate` keys SEP-414 defines), the message span and its
+MCP Events spans continue it, and link the HTTP request's span. When the
+client did not sample that trace, they keep the HTTP request as their parent
+and link the client's trace instead, so the message is still recorded. Other
+propagation formats in `params._meta` are not read: on Vercel, `@vercel/otel`'s
+runtime propagator replaces whatever the registered propagators extract with
+the Vercel request's own trace.
 
 `mcp-handler` never records tool arguments, results, error messages, user IDs
 or raw user agents. Tool and prompt names are recorded only when the server

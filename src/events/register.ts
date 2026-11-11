@@ -178,8 +178,10 @@ export function experimental_registerMcpEvents(
         auth.signal.throwIfAborted();
         // The name was checked against the event catalog above.
         const eventAttributes = eventTypeAttributes(event.name);
+        const stepRequest = { meta: ctx.mcpReq._meta, signal: auth.signal };
         const operationId = await recordSubscriptionChange(
           telemetry,
+          stepRequest,
           "prepare",
           eventAttributes,
           () => options.subscriptions.prepare(key, auth),
@@ -191,6 +193,7 @@ export function experimental_registerMcpEvents(
         auth.signal.throwIfAborted();
         const verification = await recordCallbackVerification(
           telemetry,
+          stepRequest,
           eventAttributes,
           () =>
             options.delivery.verifyEndpoint(
@@ -219,6 +222,7 @@ export function experimental_registerMcpEvents(
           ttl === null ? null : new Date(Date.now() + ttl).toISOString();
         const state = await recordSubscriptionChange(
           telemetry,
+          stepRequest,
           "subscribe",
           eventAttributes,
           () =>
@@ -261,6 +265,7 @@ export function experimental_registerMcpEvents(
         // The name isn't checked against the catalog here, so it isn't recorded.
         const removed = await recordSubscriptionChange(
           telemetry,
+          { meta: ctx.mcpReq._meta, signal: auth.signal },
           "unsubscribe",
           {},
           () => options.subscriptions.remove(key, auth),

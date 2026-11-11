@@ -1,5 +1,6 @@
 import { ProtocolError } from "@modelcontextprotocol/server";
 import { rpcErrorOutcome } from "./attributes";
+import { clientTraceFrom, selectSpanParent } from "./trace-context";
 import {
   SPAN_KIND_CLIENT,
   SPAN_KIND_INTERNAL,
@@ -31,6 +32,14 @@ export interface EventTelemetry {
   attributes: Attributes;
 }
 
+/** The MCP request an event step runs for. */
+export interface EventStepRequest {
+  /** The request's `params._meta`, which may carry the client's trace. */
+  meta?: unknown;
+  /** Aborted when the client goes away. */
+  signal?: AbortSignal;
+}
+
 export type SubscriptionAction = "prepare" | "subscribe" | "unsubscribe";
 
 type StepResult = { outcome: string; errorType?: string };
@@ -50,9 +59,11 @@ export function eventTypeAttributes(name: string): Attributes {
 }
 
 /** A short `error.type` for a failed step; never the message. */
-function eventErrorType(error: unknown): string {
+function eventErrorType(error: unknown, signal?: AbortSignal): string {
+  // The SDK aborts the request's signal with its own connection-closed error,
+  // which an adapter honoring the signal rethrows.
   const isAbort = error instanceof Error && error.name === "AbortError";
-  if (isAbort) {
+  if (isAbort || signal?.aborted) {
     return "cancelled";
   }
   if (error instanceof ProtocolError) {
@@ -68,6 +79,7 @@ function eventErrorType(error: unknown): string {
  */
 async function recordStep<T>(
   telemetry: EventTelemetry | undefined,
+  request: EventStepRequest,
   span: { name: string; kind: number; attributes: Attributes; outcomeKey: string },
   run: () => Promise<T>,
   describe: (result: T) => StepResult,
@@ -77,14 +89,19 @@ async function recordStep<T>(
   }
 
   const startTime = Date.now();
-  const parentContext = telemetry.tracing.activeContext();
+  // The same parent as the request's message span, so a subscription's spans
+  // share the client's trace.
+  const { parentContext, links } = selectSpanParent(
+    telemetry.tracing.activeContext(),
+    clientTraceFrom(request.meta),
+  );
   let step: Partial<StepResult> = {};
   try {
     const result = await run();
     step = describe(result);
     return result;
   } catch (error) {
-    step = { errorType: eventErrorType(error) };
+    step = { errorType: eventErrorType(error, request.signal) };
     throw error;
   } finally {
     const attributes: Attributes = {
@@ -100,7 +117,7 @@ async function recordStep<T>(
     try {
       const written = telemetry.tracing.tracer.startSpan(
         span.name,
-        { kind: span.kind, startTime, attributes },
+        { kind: span.kind, startTime, attributes, links },
         parentContext,
       );
       if (step.errorType) {
@@ -119,6 +136,7 @@ async function recordStep<T>(
  */
 export function recordSubscriptionChange<T>(
   telemetry: EventTelemetry | undefined,
+  request: EventStepRequest,
   action: SubscriptionAction,
   attributes: Attributes,
   run: () => Promise<T>,
@@ -126,6 +144,7 @@ export function recordSubscriptionChange<T>(
 ): Promise<T> {
   return recordStep(
     telemetry,
+    request,
     {
       name: `mcp.event.subscription ${action}`,
       kind: SPAN_KIND_INTERNAL,
@@ -143,12 +162,14 @@ export function recordSubscriptionChange<T>(
 /** A span for one callback verification, named `mcp.event.verify_callback`. */
 export function recordCallbackVerification<T>(
   telemetry: EventTelemetry | undefined,
+  request: EventStepRequest,
   attributes: Attributes,
   run: () => Promise<T>,
   describe: (result: T) => StepResult,
 ): Promise<T> {
   return recordStep(
     telemetry,
+    request,
     {
       name: "mcp.event.verify_callback",
       kind: SPAN_KIND_CLIENT,

@@ -34,6 +34,8 @@ export interface SpanContext {
   spanId: string;
   traceFlags: number;
   isRemote?: boolean;
+  /** A `TraceState`: `get`, `set`, `unset` and `serialize`. */
+  traceState?: unknown;
 }
 
 export interface Tracer {
