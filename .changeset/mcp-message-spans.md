@@ -7,3 +7,5 @@ Write one OpenTelemetry `SERVER` span per MCP request or notification, following
 Add `registerMcpOTel()` in `mcp-handler/otel`, which registers `@vercel/otel` with the Vercel project as the service name and removes the raw `User-Agent` and `Referer` attributes `@vercel/otel` adds to spans.
 
 With MCP Events, write `mcp.event.subscription {action}` and `mcp.event.verify_callback` spans around the calls to the application's subscription store and `verifyEndpoint`.
+
+Spans are on by default whenever the app registers a tracer provider. If your app already writes its own MCP `SERVER` spans with `mcp.method.name`, set `telemetry: false` or remove your spans when upgrading, or each message is counted twice.

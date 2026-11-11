@@ -1,6 +1,6 @@
 import { ProtocolError } from "@modelcontextprotocol/server";
 import { rpcErrorOutcome } from "./attributes";
-import { clientTraceFrom, selectSpanParent } from "./trace-context";
+import { clientTraceFrom, clientTraceLinks } from "./trace-context";
 import {
   SPAN_KIND_CLIENT,
   SPAN_KIND_INTERNAL,
@@ -90,12 +90,11 @@ async function recordStep<T>(
 
   const startTime = Date.now();
   // The same parent and links as the request's message span.
-  let parent: ReturnType<typeof selectSpanParent>;
+  let parentContext: unknown;
+  let links: ReturnType<typeof clientTraceLinks>;
   try {
-    parent = selectSpanParent(
-      telemetry.tracing.activeContext(),
-      clientTraceFrom(request.meta),
-    );
+    parentContext = telemetry.tracing.activeContext();
+    links = clientTraceLinks(clientTraceFrom(request.meta));
   } catch {
     return run();
   }
@@ -121,8 +120,8 @@ async function recordStep<T>(
       }
       const written = telemetry.tracing.tracer.startSpan(
         span.name,
-        { kind: span.kind, startTime, attributes, links: parent.links },
-        parent.parentContext,
+        { kind: span.kind, startTime, attributes, links },
+        parentContext,
       );
       if (step.errorType) {
         written.setStatus({ code: SPAN_STATUS_ERROR });

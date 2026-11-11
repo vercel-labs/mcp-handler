@@ -51,11 +51,9 @@ class RedactRequestHeadersSpanProcessor {
  * raw `User-Agent` and `Referer` attributes `@vercel/otel` adds to spans.
  */
 export function registerMcpOTel(configuration: Configuration = {}): void {
-  let serviceName = configuration.serviceName;
-  const hasServiceNameVariable = Boolean(process.env.OTEL_SERVICE_NAME);
-  if (!serviceName && !hasServiceNameVariable) {
-    serviceName = process.env.VERCEL_PROJECT_NAME;
-  }
+  // `@vercel/otel` still lets `OTEL_SERVICE_NAME` win over this name.
+  const serviceName =
+    configuration.serviceName ?? process.env.VERCEL_PROJECT_NAME;
 
   const spanProcessors: SpanProcessorOrName[] = [
     new RedactRequestHeadersSpanProcessor() as unknown as SpanProcessorOrName,

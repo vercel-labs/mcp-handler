@@ -97,14 +97,9 @@ export function clientTraceFrom(meta: unknown): SpanContext | undefined {
   return spanContext;
 }
 
-export interface SpanParent {
-  parentContext: unknown;
-  links: Array<{ context: SpanContext }>;
-}
-
 /**
- * The parent and links of a span for MCP work: the HTTP request stays the
- * parent, and the client's trace from `params._meta` is linked.
+ * Links to the client's trace from `params._meta`, for a span that keeps the
+ * HTTP request as its parent.
  *
  * The MCP semantic conventions suggest the client's trace as the parent, but
  * then a client could make the server record (and bill) spans the app's own
@@ -112,13 +107,11 @@ export interface SpanParent {
  * message from Vercel's counts. As a link, the span is recorded exactly when
  * the request is sampled.
  */
-export function selectSpanParent(
-  ambientContext: unknown,
+export function clientTraceLinks(
   clientTrace: SpanContext | undefined,
-): SpanParent {
-  const links: Array<{ context: SpanContext }> = [];
-  if (clientTrace) {
-    links.push({ context: clientTrace });
+): Array<{ context: SpanContext }> {
+  if (!clientTrace) {
+    return [];
   }
-  return { parentContext: ambientContext, links };
+  return [{ context: clientTrace }];
 }

@@ -30,15 +30,6 @@ describe("registerMcpOTel", () => {
     ]);
   });
 
-  it("leaves the name to OTEL_SERVICE_NAME when it is set", () => {
-    vi.stubEnv("VERCEL_PROJECT_NAME", "my-mcp");
-    vi.stubEnv("OTEL_SERVICE_NAME", "from-env");
-
-    registerMcpOTel();
-
-    expect(registeredConfiguration().serviceName).toBeUndefined();
-  });
-
   it("keeps the caller's configuration, with redaction ahead of its processors", () => {
     const processor = {
       onStart: vi.fn(),

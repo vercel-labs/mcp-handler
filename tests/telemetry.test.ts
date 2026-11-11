@@ -7,7 +7,7 @@ import {
 import type { McpServer } from "@modelcontextprotocol/server";
 import { context, SpanKind, SpanStatusCode, trace } from "@opentelemetry/api";
 import type { InMemorySpanExporter } from "@opentelemetry/sdk-trace-base";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { createMcpHandler, type McpHandlerOptions } from "../src/index";
 import { withMcpAuth } from "../src/auth/auth-wrapper";
@@ -175,6 +175,47 @@ describe("MCP message spans", () => {
       : SpanStatusCode.UNSET;
     expect(span.status.code).toBe(expectedStatus);
     expect(JSON.stringify(span.attributes)).not.toContain("private");
+  });
+
+  it("records arguments that fail the input schema as the caller's mistake", async () => {
+    await send(
+      handlerWith(),
+      legacyRequest(message("tools/call", { name: "echo", arguments: { message: 42 } })),
+    );
+
+    const [span] = mcpSpans();
+    expect(span.name).toBe("tools/call echo");
+    expect(span.attributes).toMatchObject({
+      "vercel.rpc.outcome": "request_error",
+      "error.type": "invalid_request",
+    });
+    expect(span.status.code).toBe(SpanStatusCode.UNSET);
+  });
+
+  it("records a request the client cancelled without marking a server error", async () => {
+    const connection = new AbortController();
+    const response = await handlerWith()(
+      new Request("https://example.com/api/mcp", {
+        method: "POST",
+        signal: connection.signal,
+        headers: {
+          accept: "application/json, text/event-stream",
+          "content-type": "application/json",
+          "mcp-protocol-version": "2025-06-18",
+        },
+        body: JSON.stringify(message("tools/call", { name: "slow", arguments: {} })),
+      }),
+    );
+    connection.abort();
+    await response.body?.cancel().catch(() => undefined);
+    await vi.waitFor(() => expect(mcpSpans()).toHaveLength(1), { timeout: 500 });
+
+    const [span] = mcpSpans();
+    expect(span.attributes).toMatchObject({
+      "vercel.rpc.outcome": "request_error",
+      "error.type": "cancelled",
+    });
+    expect(span.status.code).toBe(SpanStatusCode.UNSET);
   });
 
   it("records the protocol version initialize negotiated, not the proposed one", async () => {

@@ -3,13 +3,14 @@ import {
   InMemorySpanExporter,
   SimpleSpanProcessor,
 } from "@opentelemetry/sdk-trace-base";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { registerMcpOTel } from "../src/otel";
 
 const requestContextSymbol = Symbol.for("@vercel/request-context");
 const globals = globalThis as { [requestContextSymbol]?: unknown };
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   delete globals[requestContextSymbol];
   trace.disable();
   propagation.disable();
@@ -60,4 +61,19 @@ it("drops the request headers @vercel/otel copies onto root spans", () => {
     "http.host": "mcp.example.com",
     "vercel.request_id": "abc",
   });
+});
+
+it("lets OTEL_SERVICE_NAME win over the Vercel project name", () => {
+  vi.stubEnv("VERCEL_PROJECT_NAME", "my-mcp");
+  vi.stubEnv("OTEL_SERVICE_NAME", "from-env");
+  const exporter = new InMemorySpanExporter();
+  registerMcpOTel({
+    spanProcessors: [new SimpleSpanProcessor(exporter)],
+    instrumentations: [],
+  });
+
+  trace.getTracer("mcp-handler").startSpan("tools/list").end();
+
+  const [span] = exporter.getFinishedSpans();
+  expect(span?.resource.attributes["service.name"]).toBe("from-env");
 });

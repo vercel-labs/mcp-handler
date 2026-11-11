@@ -1,7 +1,7 @@
 # Observability
 
 `createMcpHandler` writes one OpenTelemetry span per MCP request or
-notification, following the
+notification your server handles, following the
 [OpenTelemetry MCP semantic conventions](https://github.com/open-telemetry/semantic-conventions-genai/blob/main/docs/gen-ai/mcp.md).
 On Vercel, those spans power the project's MCP observability: calls by tool,
 method, client and outcome, failures by reason, and latency.
@@ -30,9 +30,19 @@ export function register() {
 ```
 
 `registerMcpOTel` takes the same configuration as `registerOTel` from
-`@vercel/otel`. It names the service after the Vercel project, as Vercel's
+`@vercel/otel`. `@vercel/otel` is ESM-only, so loading `mcp-handler/otel` with
+`require` needs Node.js 20.19 or later; Next.js bundles `instrumentation.ts`,
+so the setup above is not affected. It names the service after the Vercel project, as Vercel's
 default tracing does, and removes the raw `User-Agent` and `Referer`
 attributes `@vercel/otel` adds to spans.
+
+### Upgrading from an app that already writes MCP spans
+
+If your app already writes its own `SERVER` spans with `mcp.method.name`, set
+`telemetry: false` or remove your spans when you upgrade. Otherwise every MCP
+message gets two spans, and Vercel counts it twice.
+
+### Existing OpenTelemetry setups
 
 If you already call `registerOTel` yourself, keep it: `mcp-handler` writes its
 spans through any registered tracer provider. In that case `@vercel/otel`
@@ -65,13 +75,15 @@ Every MCP message gets one `SERVER` span named `{method}`, or
 | `rpc.response.status_code`| The JSON-RPC error code, when the answer is an error                                             |
 
 A JSON-RPC parse, request, method or params error (including an unknown tool
-or prompt) is a `request_error`. A tool call answered with `isError`, including
+or prompt), tool arguments that fail the tool's input schema, and a request
+the client cancelled are `request_error`s. A tool call answered with `isError`, including
 a tool that throws, and any other JSON-RPC error is an `execution_failure`.
 
 As the MCP semantic conventions describe, the JSON-RPC errors that mean the
 caller sent a request the server could not serve (`-32700`, `-32600`,
-`-32601`, `-32602` and `-32002`) don't set the span status to `ERROR`. Every
-other failure does.
+`-32601`, `-32602` and `-32002`) don't set the span status to `ERROR`, and
+neither do invalid tool arguments or a cancelled request. Every other failure
+does.
 
 When a request carries the client's trace in `params._meta` (the W3C
 `traceparent` and `tracestate` keys SEP-414 defines), the message span and its
@@ -85,9 +97,11 @@ Vercel's counts follow your sampling rule.
 or raw user agents. Tool and prompt names are recorded only when the server
 answered with a result, so names a client invents never become attributes.
 
-HTTP requests that never become an MCP message, such as a request rejected by
-`withMcpAuth`, get no MCP span. Neither does `subscriptions/listen`, which the
-MCP SDK serves as a long-lived stream without handing it to your server.
+HTTP requests that never reach your server get no MCP span: a request
+rejected by `withMcpAuth`, and one the MCP SDK rejects first (an invalid
+envelope, an unsupported protocol revision, mismatched headers). Neither does
+`subscriptions/listen`, which the MCP SDK serves as a long-lived stream
+without handing it to your server.
 
 ## MCP Events
 

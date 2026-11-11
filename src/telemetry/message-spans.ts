@@ -18,7 +18,7 @@ import {
   type McpTracing,
   type SpanContext,
 } from "./otel-api";
-import { clientTraceFrom, selectSpanParent } from "./trace-context";
+import { clientTraceFrom, clientTraceLinks } from "./trace-context";
 
 /**
  * One `SERVER` span that sets `mcp.method.name` per MCP request or
@@ -51,7 +51,7 @@ type InboundMessage = {
 };
 
 type Answer = Extract<JSONRPCMessage, { id: RequestId }> & {
-  result?: { isError?: unknown; protocolVersion?: unknown };
+  result?: { isError?: unknown; protocolVersion?: unknown; content?: unknown };
   error?: { code?: unknown };
 };
 
@@ -71,10 +71,33 @@ function failureOf(method: string, answer: Answer): MessageFailure | undefined {
   // so a declared tool failure and a crash look the same here.
   const isFailedToolCall =
     method === "tools/call" && answer.result?.isError === true;
-  if (isFailedToolCall) {
-    return { outcome: "execution_failure", errorType: "internal_error" };
+  if (!isFailedToolCall) {
+    return undefined;
   }
-  return undefined;
+  if (isInputValidationError(answer.result?.content)) {
+    return { outcome: "request_error", errorType: "invalid_request" };
+  }
+  return { outcome: "execution_failure", errorType: "internal_error" };
+}
+
+/**
+ * The SDK answers arguments that fail a tool's input schema with an `isError`
+ * result instead of a JSON-RPC error, prefixed with this sentence. That is
+ * the caller's mistake. A result that fails the output schema is the
+ * server's, so it stays an execution failure.
+ */
+const INPUT_VALIDATION_ERROR = "Input validation error:";
+
+function isInputValidationError(content: unknown): boolean {
+  if (!Array.isArray(content)) {
+    return false;
+  }
+  const [first] = content as Array<{ type?: unknown; text?: unknown }>;
+  return (
+    first?.type === "text" &&
+    typeof first.text === "string" &&
+    first.text.startsWith(INPUT_VALIDATION_ERROR)
+  );
 }
 
 /**
@@ -181,28 +204,30 @@ function writeMessageSpan(
     attributes["rpc.response.status_code"] = String(errorCode);
   }
 
-  // A request the server could not serve is the caller's mistake: Vercel
-  // still reports it as a `request_error`, but the span is not a server error.
-  const isServerError = failure !== undefined && !isCallerErrorCode(errorCode);
+  // As the MCP semantic conventions describe, a request the server could not
+  // serve is the caller's mistake, and so are arguments that fail the input
+  // schema and a client going away: Vercel still reports them as a
+  // `request_error`, but the span is not a server error. Any other JSON-RPC
+  // error code is.
+  const isServerFailure = failure?.outcome === "execution_failure";
+  const isServerErrorCode =
+    typeof errorCode === "number" && !isCallerErrorCode(errorCode);
+  const isServerError = isServerFailure || isServerErrorCode;
 
   let name = message.method;
   if (target) {
     name = `${message.method} ${target}`;
   }
 
-  const { parentContext, links } = selectSpanParent(
-    message.parentContext,
-    message.clientTrace,
-  );
   const span = tracing.tracer.startSpan(
     name,
     {
       kind: SPAN_KIND_SERVER,
       startTime: message.startTime,
       attributes,
-      links,
+      links: clientTraceLinks(message.clientTrace),
     },
-    parentContext,
+    message.parentContext,
   );
   if (isServerError) {
     span.setStatus({ code: SPAN_STATUS_ERROR });
@@ -262,10 +287,13 @@ export function traceMcpMessages(
 
     transport.onmessage = (received, extra) => {
       const message = trackInbound(received);
-      onmessage?.(received, extra);
       const isNotification = message !== undefined && message.id === undefined;
-      if (isNotification) {
-        recordMessageSpan(tracing, callerAttributes, message);
+      try {
+        onmessage?.(received, extra);
+      } finally {
+        if (isNotification) {
+          recordMessageSpan(tracing, callerAttributes, message);
+        }
       }
     };
 
