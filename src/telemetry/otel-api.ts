@@ -29,12 +29,73 @@ export interface Span {
   end(): void;
 }
 
+export interface SpanContext {
+  traceId: string;
+  spanId: string;
+  traceFlags: number;
+  isRemote?: boolean;
+}
+
 export interface Tracer {
   startSpan(
     name: string,
-    options: { kind: number; startTime: number; attributes: Attributes },
+    options: {
+      kind: number;
+      startTime: number;
+      attributes: Attributes;
+      links?: Array<{ context: SpanContext }>;
+    },
     context?: unknown,
   ): Span;
+}
+
+/** `TraceFlags.SAMPLED` in `@opentelemetry/api`. */
+export const TRACE_FLAG_SAMPLED = 1;
+
+/** The context key `@opentelemetry/api` 1.x stores the active span under. */
+const SPAN_KEY = Symbol.for("OpenTelemetry Context Key SPAN");
+
+interface OtelContext {
+  getValue(key: symbol): unknown;
+  setValue(key: symbol, value: unknown): OtelContext;
+}
+
+function isOtelContext(value: unknown): value is OtelContext {
+  const candidate = value as Partial<OtelContext> | undefined;
+  return (
+    typeof candidate?.getValue === "function" &&
+    typeof candidate.setValue === "function"
+  );
+}
+
+/** The span context of the span active in `context`, if any. */
+export function activeSpanContext(context: unknown): SpanContext | undefined {
+  if (!isOtelContext(context)) {
+    return undefined;
+  }
+  const span = context.getValue(SPAN_KEY) as
+    | { spanContext?: () => SpanContext }
+    | undefined;
+  return span?.spanContext?.();
+}
+
+/**
+ * `context` with a remote span as its active span, as `trace.setSpanContext`
+ * does. Returns `undefined` when `context` is not an OpenTelemetry context
+ * (no context manager is registered).
+ */
+export function withRemoteParent(
+  context: unknown,
+  spanContext: SpanContext,
+): unknown {
+  if (!isOtelContext(context)) {
+    return undefined;
+  }
+  const remoteSpan = {
+    spanContext: () => spanContext,
+    isRecording: () => false,
+  };
+  return context.setValue(SPAN_KEY, remoteSpan);
 }
 
 interface TracerProvider {

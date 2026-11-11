@@ -20,6 +20,10 @@ function registerServer(server: McpServer) {
     { inputSchema: z.object({ message: z.string() }) },
     async ({ message }) => ({ content: [{ type: "text", text: message }] }),
   );
+  server.registerTool("slow", {}, async () => {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    return { content: [{ type: "text", text: "done" }] };
+  });
   server.registerTool("broken", {}, async () => {
     throw new Error("private failure detail");
   });
@@ -163,28 +167,109 @@ describe("MCP message spans", () => {
       "vercel.rpc.outcome": "success",
       ...attributes,
     });
-    const expectedStatus =
-      "error.type" in attributes ? SpanStatusCode.ERROR : SpanStatusCode.UNSET;
+    // Requests the server could not serve are the caller's mistake, not a
+    // server error, as the MCP semantic conventions describe.
+    const isServerError = attributes["vercel.rpc.outcome"] === "execution_failure";
+    const expectedStatus = isServerError
+      ? SpanStatusCode.ERROR
+      : SpanStatusCode.UNSET;
     expect(span.status.code).toBe(expectedStatus);
     expect(JSON.stringify(span.attributes)).not.toContain("private");
   });
 
-  it("reads the protocol version an initialize request carries", async () => {
-    await send(
-      handlerWith(),
+  it("records the protocol version initialize negotiated, not the proposed one", async () => {
+    const response = await handlerWith()(
       legacyRequest(
         message("initialize", {
-          protocolVersion: "2025-06-18",
+          protocolVersion: "2099-01-01",
           capabilities: {},
           clientInfo: { name: "test", version: "1" },
         }),
         { "mcp-protocol-version": "" },
       ),
     );
+    const body = await response.text();
+    const negotiated = /"protocolVersion":"([\d-]+)"/.exec(body)?.[1];
 
     const [span] = mcpSpans();
     expect(span.name).toBe("initialize");
-    expect(span.attributes["mcp.protocol.version"]).toBe("2025-06-18");
+    expect(negotiated).toBeDefined();
+    expect(negotiated).not.toBe("2099-01-01");
+    expect(span.attributes["mcp.protocol.version"]).toBe(negotiated);
+  });
+
+  it("names task methods instead of grouping them as other", async () => {
+    await send(handlerWith(), legacyRequest(message("tasks/list")));
+
+    const [span] = mcpSpans();
+    expect(span.attributes["mcp.method.name"]).toBe("tasks/list");
+  });
+
+  it("never records a client's tool name when two messages share an ID", async () => {
+    await send(
+      handlerWith(),
+      legacyRequest([
+        // The unknown tool is answered first, so its error would be matched to
+        // the slow call and the slow call's result to the client's name.
+        message("tools/call", { name: "slow", arguments: {} }, 1),
+        message("tools/call", { name: "private-tool", arguments: {} }, 1),
+      ]),
+    );
+
+    const spans = mcpSpans();
+    expect(spans.map((span) => span.name)).toEqual(["tools/call", "tools/call"]);
+    for (const span of spans) {
+      expect(span.attributes).not.toHaveProperty("gen_ai.tool.name");
+    }
+    expect(JSON.stringify(spans.map((span) => span.attributes))).not.toContain(
+      "private",
+    );
+  });
+
+  it("continues a sampled client trace from params._meta, linking the request", async () => {
+    const clientTraceId = "4bf92f3577b34da6a3ce929d0e0e4736";
+    const clientSpanId = "00f067aa0ba902b7";
+    const request = trace.getTracer("test").startSpan("POST /api/mcp");
+    await context.with(trace.setSpan(context.active(), request), () =>
+      send(
+        handlerWith(),
+        legacyRequest(
+          message("tools/list", {
+            _meta: { traceparent: `00-${clientTraceId}-${clientSpanId}-01` },
+          }),
+        ),
+      ),
+    );
+    request.end();
+
+    const [span] = mcpSpans();
+    expect(span.spanContext().traceId).toBe(clientTraceId);
+    expect(span.parentSpanContext?.spanId).toBe(clientSpanId);
+    expect(span.links.map((link) => link.context.spanId)).toEqual([
+      request.spanContext().spanId,
+    ]);
+  });
+
+  it("links a client trace the client did not sample, so the message is still counted", async () => {
+    const clientTraceId = "4bf92f3577b34da6a3ce929d0e0e4736";
+    const request = trace.getTracer("test").startSpan("POST /api/mcp");
+    await context.with(trace.setSpan(context.active(), request), () =>
+      send(
+        handlerWith(),
+        legacyRequest(
+          message("tools/list", {
+            _meta: { traceparent: `00-${clientTraceId}-00f067aa0ba902b7-00` },
+          }),
+        ),
+      ),
+    );
+    request.end();
+
+    const [span] = mcpSpans();
+    expect(span.parentSpanContext?.spanId).toBe(request.spanContext().spanId);
+    expect(span.links.map((link) => link.context.traceId)).toEqual([
+      clientTraceId,
+    ]);
   });
 
   it("counts each message of a batch, and a notification", async () => {

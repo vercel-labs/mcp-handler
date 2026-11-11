@@ -4,6 +4,7 @@ import type {
   RequestId,
 } from "@modelcontextprotocol/server";
 import {
+  isCallerErrorCode,
   knownMcpMethod,
   protocolVersion,
   rpcErrorOutcome,
@@ -11,10 +12,14 @@ import {
   type MessageFailure,
 } from "./attributes";
 import {
+  activeSpanContext,
   SPAN_KIND_SERVER,
   SPAN_STATUS_ERROR,
+  TRACE_FLAG_SAMPLED,
+  withRemoteParent,
   type Attributes,
   type McpTracing,
+  type SpanContext,
 } from "./otel-api";
 
 /**
@@ -25,7 +30,8 @@ import {
  *
  * HTTP requests that never become a message (rejected at auth, a `GET`, an
  * unparseable body, a JSON-RPC response from the client) never reach the
- * transport's `onmessage`, so they get no span.
+ * transport's `onmessage`, so they get no span. Neither does
+ * `subscriptions/listen`, which the SDK serves without connecting the server.
  */
 
 type InboundMessage = {
@@ -33,14 +39,21 @@ type InboundMessage = {
   id?: RequestId;
   /** The tool or prompt the request names, as the client sent it. */
   name?: unknown;
-  /** A protocol version the message itself carries (`initialize`). */
+  /**
+   * Another pending message has the same ID, so answers can't be matched to
+   * their message: the client's names are never recorded for either.
+   */
+  ambiguous: boolean;
+  /** The protocol revision the message's envelope names (2026-07-28). */
   protocolVersion?: string;
+  /** The client's trace, from `params._meta.traceparent`. */
+  clientTrace?: SpanContext;
   startTime: number;
   parentContext: unknown;
 };
 
 type Answer = Extract<JSONRPCMessage, { id: RequestId }> & {
-  result?: { isError?: unknown };
+  result?: { isError?: unknown; protocolVersion?: unknown };
   error?: { code?: unknown };
 };
 
@@ -49,6 +62,32 @@ const TARGET_ATTRIBUTES: Record<string, string> = {
   "tools/call": "gen_ai.tool.name",
   "prompts/get": "gen_ai.prompt.name",
 };
+
+const PROTOCOL_VERSION_META_KEY = "io.modelcontextprotocol/protocolVersion";
+const TRACEPARENT = /^([0-9a-f]{2})-([0-9a-f]{32})-([0-9a-f]{16})-([0-9a-f]{2})$/;
+
+/** A W3C `traceparent`, or `undefined` when it is missing or invalid. */
+function parseTraceparent(value: unknown): SpanContext | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const match = TRACEPARENT.exec(value.trim());
+  if (!match) {
+    return undefined;
+  }
+  const [, version, traceId, spanId, flags] = match;
+  const isValid =
+    version !== "ff" && !/^0+$/.test(traceId) && !/^0+$/.test(spanId);
+  if (!isValid) {
+    return undefined;
+  }
+  return {
+    traceId,
+    spanId,
+    traceFlags: parseInt(flags, 16),
+    isRemote: true,
+  };
+}
 
 function failureOf(method: string, answer: Answer): MessageFailure | undefined {
   if (answer.error) {
@@ -77,10 +116,63 @@ function targetOf(
     typeof answer === "object" && answer !== null && "result" in answer;
   const namesTarget =
     message.method in TARGET_ATTRIBUTES && typeof message.name === "string";
-  if (isResult && namesTarget) {
+  if (isResult && namesTarget && !message.ambiguous) {
     return message.name as string;
   }
   return undefined;
+}
+
+/**
+ * The revision the message was served with: the one `initialize` negotiated,
+ * or the one a 2026-07-28 envelope names.
+ */
+function protocolVersionOf(
+  message: InboundMessage,
+  answer: Answer | "closed" | undefined,
+): string | undefined {
+  if (message.method === "initialize") {
+    const isResult = typeof answer === "object" && answer !== null;
+    if (isResult) {
+      return protocolVersion(answer.result?.protocolVersion);
+    }
+    return undefined;
+  }
+  return message.protocolVersion;
+}
+
+/**
+ * The parent and links of the message's span. As the MCP semantic conventions
+ * describe, the client's trace from `params._meta` is the parent and the HTTP
+ * request is linked. A trace the client did not sample stays a link instead:
+ * a parent-based sampler would drop the span, and Vercel would not count the
+ * message.
+ */
+function spanParent(message: InboundMessage): {
+  parentContext: unknown;
+  links: Array<{ context: SpanContext }>;
+} {
+  const clientTrace = message.clientTrace;
+  if (!clientTrace) {
+    return { parentContext: message.parentContext, links: [] };
+  }
+
+  const isSampled = (clientTrace.traceFlags & TRACE_FLAG_SAMPLED) !== 0;
+  const clientParent = isSampled
+    ? withRemoteParent(message.parentContext, clientTrace)
+    : undefined;
+  if (clientParent === undefined) {
+    return {
+      parentContext: message.parentContext,
+      links: [{ context: clientTrace }],
+    };
+  }
+
+  const links: Array<{ context: SpanContext }> = [];
+  const requestSpan = activeSpanContext(message.parentContext);
+  if (requestSpan) {
+    links.push({ context: requestSpan });
+  }
+  return { parentContext: clientParent, links };
 }
 
 /**
@@ -120,8 +212,9 @@ function recordMessageSpan(
   if (message.id !== undefined) {
     attributes["jsonrpc.request.id"] = String(message.id);
   }
-  if (message.protocolVersion) {
-    attributes["mcp.protocol.version"] = message.protocolVersion;
+  const version = protocolVersionOf(message, answer);
+  if (version) {
+    attributes["mcp.protocol.version"] = version;
   }
   if (failure) {
     attributes["error.type"] = failure.errorType;
@@ -132,18 +225,28 @@ function recordMessageSpan(
     attributes["rpc.response.status_code"] = String(errorCode);
   }
 
+  // A request the server could not serve is the caller's mistake: Vercel
+  // still reports it as a `request_error`, but the span is not a server error.
+  const isServerError = failure !== undefined && !isCallerErrorCode(errorCode);
+
   let name = message.method;
   if (target) {
     name = `${message.method} ${target}`;
   }
 
   try {
+    const { parentContext, links } = spanParent(message);
     const span = tracing.tracer.startSpan(
       name,
-      { kind: SPAN_KIND_SERVER, startTime: message.startTime, attributes },
-      message.parentContext,
+      {
+        kind: SPAN_KIND_SERVER,
+        startTime: message.startTime,
+        attributes,
+        links,
+      },
+      parentContext,
     );
-    if (failure) {
+    if (isServerError) {
       span.setStatus({ code: SPAN_STATUS_ERROR });
     }
     span.end();
@@ -160,18 +263,18 @@ function readInboundMessage(
     return undefined;
   }
   const params = (received as { params?: Record<string, unknown> }).params;
-  const method = knownMcpMethod(received.method);
+  const meta = params?._meta as Record<string, unknown> | undefined;
   const message: InboundMessage = {
-    method,
+    method: knownMcpMethod(received.method),
     name: params?.name,
+    ambiguous: false,
+    protocolVersion: protocolVersion(meta?.[PROTOCOL_VERSION_META_KEY]),
+    clientTrace: parseTraceparent(meta?.traceparent),
     startTime: Date.now(),
     parentContext: tracing.activeContext(),
   };
   if ("id" in received) {
     message.id = received.id;
-  }
-  if (method === "initialize") {
-    message.protocolVersion = protocolVersion(params?.protocolVersion);
   }
   return message;
 }
@@ -192,7 +295,8 @@ export function traceMcpMessages(
   const connect = server.connect.bind(server);
   server.connect = async (transport) => {
     await connect(transport);
-    const unanswered = new Map<RequestId, InboundMessage>();
+    // Messages waiting for an answer, oldest first for each ID.
+    const unanswered = new Map<RequestId, InboundMessage[]>();
     const { onmessage, onclose } = transport;
     const send = transport.send.bind(transport);
 
@@ -200,7 +304,12 @@ export function traceMcpMessages(
       const message = readInboundMessage(received, tracing);
       if (message?.id !== undefined) {
         // Before dispatch: the server answers an unknown method synchronously.
-        unanswered.set(message.id, message);
+        const pending = unanswered.get(message.id) ?? [];
+        pending.push(message);
+        if (pending.length > 1) {
+          for (const sameId of pending) sameId.ambiguous = true;
+        }
+        unanswered.set(message.id, pending);
       }
       onmessage?.(received, extra);
       const isNotification = message !== undefined && message.id === undefined;
@@ -214,9 +323,12 @@ export function traceMcpMessages(
         !("method" in sent) && "id" in sent && sent.id !== undefined;
       if (isAnswer) {
         const id = sent.id as RequestId;
-        const message = unanswered.get(id);
-        if (message) {
+        const pending = unanswered.get(id);
+        const message = pending?.shift();
+        if (pending?.length === 0) {
           unanswered.delete(id);
+        }
+        if (message) {
           recordMessageSpan(tracing, callerAttributes, message, sent as Answer);
         }
       }
@@ -224,8 +336,10 @@ export function traceMcpMessages(
     };
 
     transport.onclose = () => {
-      for (const message of unanswered.values()) {
-        recordMessageSpan(tracing, callerAttributes, message, "closed");
+      for (const pending of unanswered.values()) {
+        for (const message of pending) {
+          recordMessageSpan(tracing, callerAttributes, message, "closed");
+        }
       }
       unanswered.clear();
       onclose?.();

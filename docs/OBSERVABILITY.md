@@ -35,7 +35,9 @@ default tracing does, and removes the raw `User-Agent` and `Referer`
 attributes `@vercel/otel` adds to spans.
 
 If you already call `registerOTel` yourself, keep it: `mcp-handler` writes its
-spans through any registered tracer provider.
+spans through any registered tracer provider. In that case `@vercel/otel`
+still copies the raw `User-Agent` and `Referer` of the HTTP request onto the
+spans it treats as roots; `registerMcpOTel` is what removes them.
 
 Vercel collects traces only when the project has a sampling rule. The MCP
 views count the spans Vercel stores, so trace 100% of your MCP route's
@@ -66,12 +68,23 @@ A JSON-RPC parse, request, method or params error (including an unknown tool
 or prompt) is a `request_error`. A tool call answered with `isError`, including
 a tool that throws, and any other JSON-RPC error is an `execution_failure`.
 
-Tool arguments, results, error messages, user IDs and raw user agents are
-never recorded. Tool and prompt names are recorded only when the server
+As the MCP semantic conventions describe, the JSON-RPC errors that mean the
+caller sent a request the server could not serve (`-32700`, `-32600`,
+`-32601`, `-32602` and `-32002`) don't set the span status to `ERROR`. Every
+other failure does.
+
+When a request carries the client's trace in `params._meta.traceparent`, the
+message span continues it, and links the HTTP request's span. When the client
+did not sample that trace, the span keeps the HTTP request as its parent and
+links the client's trace instead, so the message is still recorded.
+
+`mcp-handler` never records tool arguments, results, error messages, user IDs
+or raw user agents. Tool and prompt names are recorded only when the server
 answered with a result, so names a client invents never become attributes.
 
 HTTP requests that never become an MCP message, such as a request rejected by
-`withMcpAuth`, get no MCP span.
+`withMcpAuth`, get no MCP span. Neither does `subscriptions/listen`, which the
+MCP SDK serves as a long-lived stream without handing it to your server.
 
 ## MCP Events
 

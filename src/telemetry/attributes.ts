@@ -106,6 +106,13 @@ const MCP_METHODS = new Set([
   "notifications/initialized",
   "notifications/cancelled",
   "notifications/roots/list_changed",
+  "notifications/progress",
+  "notifications/tasks/status",
+  "tasks/get",
+  "tasks/result",
+  "tasks/list",
+  "tasks/cancel",
+  "subscriptions/listen",
   "events/list",
   "events/subscribe",
   "events/unsubscribe",
@@ -157,6 +164,17 @@ const REQUEST_ERRORS = new Map<number, RequestErrorType>([
   [-32014, "invalid_request"], // Unsupported event option
   [-32015, "invalid_request"], // Callback verification failed
 ]);
+
+/**
+ * JSON-RPC errors that mean the caller sent a request the server could not
+ * serve. The MCP semantic conventions say these SHOULD NOT mark a server span
+ * as an error; every other code should.
+ */
+const CALLER_ERROR_CODES = new Set([-32700, -32600, -32601, -32602, -32002]);
+
+export function isCallerErrorCode(code: unknown): boolean {
+  return typeof code === "number" && CALLER_ERROR_CODES.has(code);
+}
 
 /** Outcome and `error.type` of a message answered with a JSON-RPC error. */
 export function rpcErrorOutcome(code: unknown): MessageFailure {
