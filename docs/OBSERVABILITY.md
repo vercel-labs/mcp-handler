@@ -72,7 +72,7 @@ Every MCP message gets one `SERVER` span named `{method}`, or
 | `gen_ai.operation.name`   | `execute_tool` on `tools/call`                                                                   |
 | `jsonrpc.request.id`      | The request ID; absent on notifications                                                          |
 | `mcp.protocol.version`    | The negotiated protocol revision, when known                                                     |
-| `vercel.rpc.outcome`      | `success`, `input_required`, `request_error` or `execution_failure`                              |
+| `vercel.rpc.outcome`      | `success`, `input_required`, `request_error`, `execution_failure`, or what the tool reported (`api_error`, `tool_error`) |
 | `vercel.rpc.client.name`  | A fixed client vocabulary (`claude`, `cursor`, `codex`, …, `other`) from the user agent and OAuth client ID |
 | `vercel.rpc.route`        | The `telemetry.route` option, `mcp` by default                                                   |
 | `vercel.rpc.auth.outcome` | `authorized` with a token verified by `withMcpAuth`, otherwise `anonymous`                       |
@@ -90,7 +90,8 @@ A tool, prompt or resource that needs more input from the user
 not a failure. The client's follow-up call with that input gets its own span. A tool call answered with `isError`, including
 a tool that throws, and any other JSON-RPC error is an `execution_failure`.
 
-Only an `execution_failure` sets the span status to `ERROR`. A request the
+Only the server's own failures (`execution_failure`, and a reported `api_error`
+or `tool_error`) set the span status to `ERROR`. A request the
 server could not serve, invalid tool arguments and a cancelled request are the
 caller's, as the MCP semantic conventions describe for JSON-RPC errors.
 
@@ -118,6 +119,45 @@ rejected by `withMcpAuth`, and one the MCP SDK rejects first (an invalid
 envelope, an unsupported protocol revision, mismatched headers). Neither does
 `subscriptions/listen`, which the MCP SDK serves as a long-lived stream
 without handing it to your server.
+
+## Reporting why a tool failed
+
+By default, a tool call answered with an `isError` result is an
+`execution_failure` with `error.type: internal_error`. When the tool knows
+why it failed, it can say so with `experimental_setToolOutcome`, using the
+handler's `ctx`, before it returns:
+
+```ts
+import { createMcpHandler, experimental_setToolOutcome } from "mcp-handler";
+
+const handler = createMcpHandler((server) => {
+  server.registerTool("list_projects", {}, async (ctx) => {
+    const response = await fetch("https://api.example.com/projects");
+    if (!response.ok) {
+      experimental_setToolOutcome(ctx, {
+        outcome: "api_error",
+        errorType: response.status === 403 ? "forbidden" : "upstream_error",
+      });
+      return { isError: true, content: [{ type: "text", text: "Failed" }] };
+    }
+    return { content: [{ type: "text", text: await response.text() }] };
+  });
+});
+```
+
+| Outcome             | Use it when                                          | Default `error.type` |
+| ------------------- | ---------------------------------------------------- | -------------------- |
+| `api_error`         | An upstream API the tool called failed               | `api_error`          |
+| `tool_error`        | The tool failed in a way it expects, such as a timeout | `tool_error`       |
+| `execution_failure` | The tool broke                                       | `internal_error`     |
+| `request_error`     | The caller asked for something the tool can't do     | `invalid_request`    |
+
+`errorType` must be a short code (lowercase letters, digits and `_ . -`, up to
+64 characters), such as `forbidden` or `timeout`; anything else falls back to
+the default. The report applies only when the call's answer is an `isError`
+result, so it can never mark a successful call as failed, and every outcome
+except `request_error` sets the span status to `ERROR`. It does nothing when
+telemetry is off or no tracer provider is registered.
 
 ## MCP Events
 

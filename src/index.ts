@@ -40,3 +40,6 @@ export {
 } from "./auth/auth-metadata";
 
 export { getPublicOrigin, getPublicUrl } from "./lib/url";
+
+export { experimental_setToolOutcome } from "./telemetry/tool-outcome";
+export type { ExperimentalToolOutcome } from "./telemetry/tool-outcome";
