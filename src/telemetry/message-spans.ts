@@ -4,12 +4,10 @@ import type {
   RequestId,
 } from "@modelcontextprotocol/server";
 import {
-  isCallerErrorCode,
   knownMcpMethod,
   protocolVersion,
   rpcErrorOutcome,
   VERCEL_RPC_ATTRIBUTES,
-  type MessageFailure,
 } from "./attributes";
 import {
   SPAN_KIND_SERVER,
@@ -51,7 +49,12 @@ type InboundMessage = {
 };
 
 type Answer = Extract<JSONRPCMessage, { id: RequestId }> & {
-  result?: { isError?: unknown; protocolVersion?: unknown; content?: unknown };
+  result?: {
+    isError?: unknown;
+    protocolVersion?: unknown;
+    content?: unknown;
+    resultType?: unknown;
+  };
   error?: { code?: unknown };
 };
 
@@ -63,16 +66,52 @@ const TARGET_ATTRIBUTES: Record<string, string> = {
 
 const PROTOCOL_VERSION_META_KEY = "io.modelcontextprotocol/protocolVersion";
 const MAX_REQUEST_ID_LENGTH = 128;
-function failureOf(method: string, answer: Answer): MessageFailure | undefined {
+type MessageOutcome = {
+  outcome: "success" | "input_required" | "request_error" | "execution_failure";
+  errorType?: string;
+};
+
+/** JSON-RPC `-32042`: the tool needs the user to open a URL first. */
+const URL_ELICITATION_REQUIRED = -32042;
+
+/**
+ * The message's outcome from its answer: the JSON-RPC response, `'closed'`
+ * when the connection closed before one was sent, or none for a notification.
+ */
+function outcomeOf(
+  method: string,
+  answer: Answer | "closed" | undefined,
+  clientAborted: boolean,
+): MessageOutcome {
+  if (answer === undefined) {
+    return { outcome: "success" };
+  }
+  if (answer === "closed") {
+    // Only the client going away is a cancellation; a close the server starts
+    // (a failure or a shutdown) is the server's.
+    if (clientAborted) {
+      return { outcome: "request_error", errorType: "cancelled" };
+    }
+    return { outcome: "execution_failure", errorType: "internal_error" };
+  }
   if (answer.error) {
+    // A tool waiting on the user is not a failure, as with `input_required`.
+    if (answer.error.code === URL_ELICITATION_REQUIRED) {
+      return { outcome: "input_required" };
+    }
     return rpcErrorOutcome(answer.error.code);
+  }
+  // On 2026-07-28, a tool, prompt or resource that needs more input answers
+  // with an `input_required` result, and the client calls again with it.
+  if (answer.result?.resultType === "input_required") {
+    return { outcome: "input_required" };
   }
   // The SDK answers a tool handler that throws with an `isError` result too,
   // so a declared tool failure and a crash look the same here.
   const isFailedToolCall =
     method === "tools/call" && answer.result?.isError === true;
   if (!isFailedToolCall) {
-    return undefined;
+    return { outcome: "success" };
   }
   if (isInputValidationError(answer.result?.content)) {
     return { outcome: "request_error", errorType: "invalid_request" };
@@ -82,22 +121,26 @@ function failureOf(method: string, answer: Answer): MessageFailure | undefined {
 
 /**
  * The SDK answers arguments that fail a tool's input schema with an `isError`
- * result instead of a JSON-RPC error, prefixed with this sentence. That is
- * the caller's mistake. A result that fails the output schema is the
- * server's, so it stays an execution failure.
+ * result instead of a JSON-RPC error, starting with one of these. That is the
+ * caller's mistake. A result that fails the output schema is the server's, so
+ * it stays an execution failure. This depends on the SDK's wording: if it
+ * changes, such calls fall back to execution failures.
  */
-const INPUT_VALIDATION_ERROR = "Input validation error:";
+const INPUT_VALIDATION_PREFIXES = [
+  "Input validation error:",
+  "Invalid arguments for tool",
+];
 
 function isInputValidationError(content: unknown): boolean {
   if (!Array.isArray(content)) {
     return false;
   }
   const [first] = content as Array<{ type?: unknown; text?: unknown }>;
-  return (
-    first?.type === "text" &&
-    typeof first.text === "string" &&
-    first.text.startsWith(INPUT_VALIDATION_ERROR)
-  );
+  const text = first?.type === "text" ? first.text : undefined;
+  if (typeof text !== "string") {
+    return false;
+  }
+  return INPUT_VALIDATION_PREFIXES.some((prefix) => text.startsWith(prefix));
 }
 
 /**
@@ -147,36 +190,33 @@ function protocolVersionOf(
  * before one was sent, and absent for a notification.
  */
 function recordMessageSpan(
-  tracing: McpTracing,
-  callerAttributes: Attributes,
+  context: TracedServer,
   message: InboundMessage,
   answer?: Answer | "closed",
 ): void {
   try {
-    writeMessageSpan(tracing, callerAttributes, message, answer);
+    writeMessageSpan(context, message, answer);
   } catch {
     // A span must never change the server's answer.
   }
 }
 
 function writeMessageSpan(
-  tracing: McpTracing,
-  callerAttributes: Attributes,
+  { tracing, callerAttributes, clientAborted }: TracedServer,
   message: InboundMessage,
   answer?: Answer | "closed",
 ): void {
-  let failure: MessageFailure | undefined;
-  if (answer === "closed") {
-    failure = { outcome: "request_error", errorType: "cancelled" };
-  } else if (answer) {
-    failure = failureOf(message.method, answer);
-  }
+  const { outcome, errorType } = outcomeOf(
+    message.method,
+    answer,
+    clientAborted(),
+  );
 
   const target = targetOf(message, answer);
   const attributes: Attributes = {
     "mcp.method.name": message.method,
     ...callerAttributes,
-    [VERCEL_RPC_ATTRIBUTES.outcome]: failure?.outcome ?? "success",
+    [VERCEL_RPC_ATTRIBUTES.outcome]: outcome,
   };
   if (message.method === "tools/call") {
     attributes["gen_ai.operation.name"] = "execute_tool";
@@ -195,8 +235,8 @@ function writeMessageSpan(
   if (version) {
     attributes["mcp.protocol.version"] = version;
   }
-  if (failure) {
-    attributes["error.type"] = failure.errorType;
+  if (errorType) {
+    attributes["error.type"] = errorType;
   }
   const errorCode =
     typeof answer === "object" ? answer.error?.code : undefined;
@@ -204,15 +244,10 @@ function writeMessageSpan(
     attributes["rpc.response.status_code"] = String(errorCode);
   }
 
-  // As the MCP semantic conventions describe, a request the server could not
-  // serve is the caller's mistake, and so are arguments that fail the input
-  // schema and a client going away: Vercel still reports them as a
-  // `request_error`, but the span is not a server error. Any other JSON-RPC
-  // error code is.
-  const isServerFailure = failure?.outcome === "execution_failure";
-  const isServerErrorCode =
-    typeof errorCode === "number" && !isCallerErrorCode(errorCode);
-  const isServerError = isServerFailure || isServerErrorCode;
+  // Only the server's own failures are span errors. A request the server
+  // could not serve, invalid arguments and a client going away are the
+  // caller's: Vercel still reports them as `request_error`.
+  const isServerError = outcome === "execution_failure";
 
   let name = message.method;
   if (target) {
@@ -259,19 +294,25 @@ function readInboundMessage(
   return message;
 }
 
+/** What a traced server's spans need. */
+export interface TracedServer {
+  tracing: McpTracing;
+  /** What the handler knows about the caller: route, client and auth outcome. */
+  callerAttributes: Attributes;
+  /** Whether the client went away, as opposed to the server closing. */
+  clientAborted: () => boolean;
+}
+
 /**
  * Records a span for every request and notification the transport hands to
  * `server`. The SDK connects each per-request server to its own transport, and
  * splits a batch into messages before this sees them.
- *
- * @param callerAttributes What the handler knows about the caller: route,
- * client and auth outcome.
  */
 export function traceMcpMessages(
   server: McpServer,
-  tracing: McpTracing,
-  callerAttributes: Attributes,
+  traced: TracedServer,
 ): void {
+  const { tracing } = traced;
   const connect = server.connect.bind(server);
   server.connect = async (transport) => {
     await connect(transport);
@@ -292,7 +333,7 @@ export function traceMcpMessages(
         onmessage?.(received, extra);
       } finally {
         if (isNotification) {
-          recordMessageSpan(tracing, callerAttributes, message);
+          recordMessageSpan(traced, message);
         }
       }
     };
@@ -349,7 +390,7 @@ export function traceMcpMessages(
     transport.send = (sent, options) => {
       const message = takeAnswered(sent);
       if (message) {
-        recordMessageSpan(tracing, callerAttributes, message, sent as Answer);
+        recordMessageSpan(traced, message, sent as Answer);
       }
       return send(sent, options);
     };
@@ -357,7 +398,7 @@ export function traceMcpMessages(
     transport.onclose = () => {
       for (const pending of unanswered.values()) {
         for (const message of pending.messages.slice(pending.next)) {
-          recordMessageSpan(tracing, callerAttributes, message, "closed");
+          recordMessageSpan(traced, message, "closed");
         }
       }
       unanswered.clear();

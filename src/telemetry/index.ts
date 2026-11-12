@@ -61,7 +61,11 @@ export function instrumentMcpServer(
       return;
     }
     const caller = callerAttributes(ctx, route);
-    traceMcpMessages(server, tracing, caller);
+    traceMcpMessages(server, {
+      tracing,
+      callerAttributes: caller,
+      clientAborted: () => ctx.requestInfo?.signal?.aborted === true,
+    });
     instrumentedServers.set(server, {
       tracing,
       attributes: {

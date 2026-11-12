@@ -419,7 +419,8 @@ describe("MCP message spans", () => {
     expect(span.attributes).toMatchObject({
       "vercel.rpc.route": "admin",
       "vercel.rpc.auth.outcome": "authorized",
-      "vercel.rpc.client.name": "http-library",
+      // The client ID names Codex; a generic library user agent doesn't win.
+      "vercel.rpc.client.name": "codex",
     });
   });
 

@@ -157,7 +157,8 @@ describe("MCP Events spans", () => {
       "vercel.mcp.event.outcome": "failed",
       "error.type": "timeout",
     });
-    expect(spans[1].status.code).toBe(SpanStatusCode.ERROR);
+    // The client's callback failing is not a server error.
+    expect(spans[1].status.code).toBe(SpanStatusCode.UNSET);
   });
 
   it("records a store failure as a short error type", async () => {
@@ -241,6 +242,38 @@ describe("MCP Events spans", () => {
     const [span] = eventSpans();
     expect(span.name).toBe("mcp.event.subscription prepare");
     expect(span.attributes["error.type"]).toBe("cancelled");
+  });
+
+  it("records an invalid stored state as a failed subscribe step", async () => {
+    const upsert = vi.fn(async () => ({ cursor: 42 }) as never);
+
+    await setup({ upsert })("events/subscribe", subscribeParams);
+
+    const subscribe = eventSpans().find(
+      (span) => span.name === "mcp.event.subscription subscribe",
+    )!;
+    expect(subscribe.attributes["error.type"]).toBe("internal_error");
+    expect(subscribe.attributes).not.toHaveProperty(
+      "vercel.mcp.subscription.outcome",
+    );
+    expect(subscribe.status.code).toBe(SpanStatusCode.ERROR);
+  });
+
+  it("keeps a store error thrown after the client left", async () => {
+    const connection = new AbortController();
+    const prepare = vi.fn(async () => {
+      connection.abort();
+      throw new Error("store unavailable");
+    });
+
+    await setup({ prepare })(
+      "events/subscribe",
+      subscribeParams,
+      connection.signal,
+    ).catch(() => undefined);
+    await vi.waitFor(() => expect(eventSpans()).toHaveLength(1));
+
+    expect(eventSpans()[0].attributes["error.type"]).toBe("internal_error");
   });
 
   it("writes no event spans when telemetry is off", async () => {

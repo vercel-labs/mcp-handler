@@ -15,7 +15,7 @@ provider. `mcp-handler` itself has no runtime dependency on
 Install the OpenTelemetry packages:
 
 ```bash
-npm install @vercel/otel @opentelemetry/api
+npm install @vercel/otel @opentelemetry/api @opentelemetry/api-logs
 ```
 
 Register OpenTelemetry in `instrumentation.ts` at the project root (or in
@@ -30,7 +30,8 @@ export function register() {
 ```
 
 `registerMcpOTel` takes the same configuration as `registerOTel` from
-`@vercel/otel`. `@vercel/otel` is ESM-only, so loading `mcp-handler/otel` with
+`@vercel/otel` 2.x. It removes the raw `User-Agent` and `Referer` from every
+span in the app, not only MCP spans. `@vercel/otel` is ESM-only, so loading `mcp-handler/otel` with
 `require` needs Node.js 20.19 or later; Next.js bundles `instrumentation.ts`,
 so the setup above is not affected. It names the service after the Vercel project, as Vercel's
 default tracing does, and removes the raw `User-Agent` and `Referer`
@@ -40,7 +41,9 @@ attributes `@vercel/otel` adds to spans.
 
 If your app already writes its own `SERVER` spans with `mcp.method.name`, set
 `telemetry: false` or remove your spans when you upgrade. Otherwise every MCP
-message gets two spans, and Vercel counts it twice.
+message gets two spans, and Vercel counts it twice. The same applies to
+`mcp.event.*` spans that your MCP Events store or `verifyEndpoint` writes,
+because `mcp-handler` now writes those spans around the same calls.
 
 ### Existing OpenTelemetry setups
 
@@ -67,7 +70,7 @@ Every MCP message gets one `SERVER` span named `{method}`, or
 | `gen_ai.operation.name`   | `execute_tool` on `tools/call`                                                                   |
 | `jsonrpc.request.id`      | The request ID; absent on notifications                                                          |
 | `mcp.protocol.version`    | The negotiated protocol revision, when known                                                     |
-| `vercel.rpc.outcome`      | `success`, `request_error` or `execution_failure`                                                |
+| `vercel.rpc.outcome`      | `success`, `input_required`, `request_error` or `execution_failure`                              |
 | `vercel.rpc.client.name`  | A fixed client vocabulary (`claude`, `cursor`, `codex`, …, `other`) from the user agent and OAuth client ID |
 | `vercel.rpc.route`        | The `telemetry.route` option, `mcp` by default                                                   |
 | `vercel.rpc.auth.outcome` | `authorized` with a token verified by `withMcpAuth`, otherwise `anonymous`                       |
@@ -75,15 +78,25 @@ Every MCP message gets one `SERVER` span named `{method}`, or
 | `rpc.response.status_code`| The JSON-RPC error code, when the answer is an error                                             |
 
 A JSON-RPC parse, request, method or params error (including an unknown tool
-or prompt), tool arguments that fail the tool's input schema, and a request
-the client cancelled are `request_error`s. A tool call answered with `isError`, including
+or prompt), a missing client capability, an unsupported protocol version,
+tool arguments that fail the tool's input schema, and a request the client
+cancelled are `request_error`s. A request still pending when the server closes
+the connection itself is an `execution_failure`.
+
+A tool, prompt or resource that needs more input from the user
+(`input_required` on 2026-07-28, or a URL elicitation) is `input_required`,
+not a failure. The client's follow-up call with that input gets its own span. A tool call answered with `isError`, including
 a tool that throws, and any other JSON-RPC error is an `execution_failure`.
 
-As the MCP semantic conventions describe, the JSON-RPC errors that mean the
-caller sent a request the server could not serve (`-32700`, `-32600`,
-`-32601`, `-32602` and `-32002`) don't set the span status to `ERROR`, and
-neither do invalid tool arguments or a cancelled request. Every other failure
-does.
+Only an `execution_failure` sets the span status to `ERROR`. A request the
+server could not serve, invalid tool arguments and a cancelled request are the
+caller's, as the MCP semantic conventions describe for JSON-RPC errors.
+
+Notification spans count notifications; they are not timed. The SDK runs
+notification handlers after the span is written, so a slow or failing handler
+doesn't show. Requests that reuse an ID within one batch, which the protocol
+doesn't allow, are counted correctly, but their outcomes and durations may be
+swapped.
 
 When a request carries the client's trace in `params._meta` (the W3C
 `traceparent` and `tracestate` keys SEP-414 defines), the message span and its
@@ -118,7 +131,8 @@ gets a span for every call `mcp-handler` makes to your adapters:
 
 Every event span also carries `vercel.rpc.client.name` and `vercel.rpc.route`.
 A step that throws gets a short `error.type` (`rate_limited`, `forbidden`,
-`not_found`, `cancelled` or `internal_error`). Callback URLs, subscription IDs,
+`not_found`, `cancelled` or `internal_error`); only `internal_error` sets the
+span status to `ERROR`. Callback URLs, subscription IDs,
 secrets, arguments and error messages are never recorded, and the event name
 is recorded only once it matched your catalog.
 

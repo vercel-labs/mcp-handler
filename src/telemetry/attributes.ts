@@ -16,25 +16,29 @@ export const VERCEL_RPC_ATTRIBUTES = {
   authOutcome: "vercel.rpc.auth.outcome",
 } as const;
 
-/** Ordered: the first matching rule names the client. */
-const CLIENT_NAME_RULES: Array<[RegExp, string]> = [
+/**
+ * Rules that name a specific client, checked against the user agent and
+ * against the client ID metadata document's host and path. Ordered: the first
+ * matching rule names the client.
+ */
+const SPECIFIC_CLIENT_RULES: Array<[RegExp, string]> = [
   [/claude-code/i, "claude-code"],
-  [/^Claude-User\b/i, "claude"],
   [/codex/i, "codex"],
-  [/^openai-mcp\b/i, "chatgpt"],
-  [/^Cursor\b/i, "cursor"],
   [/Visual Studio Code|\bvscode\b|copilot/i, "vscode"],
   [/windsurf|codeium/i, "windsurf"],
   [/gemini/i, "gemini"],
   [/grok/i, "grok"],
-  [/^Muse\b/i, "muse"],
   [/hermes-agent|nousresearch/i, "hermes"],
   [/mcp-inspector|modelcontextprotocol\/inspector/i, "mcp-inspector"],
+];
+
+/** Rules anchored to the start of a user agent; never run on a client ID. */
+const USER_AGENT_RULES: Array<[RegExp, string]> = [
+  [/^Claude-User\b/i, "claude"],
+  [/^openai-mcp\b/i, "chatgpt"],
+  [/^Cursor\b/i, "cursor"],
+  [/^Muse\b/i, "muse"],
   [/^v0\b/i, "v0"],
-  [
-    /^(python-httpx2?|python-requests|aiohttp|undici|node|node-fetch|axios|Go-http-client|curl|okhttp|Java)\b/i,
-    "http-library",
-  ],
 ];
 
 const CLIENT_HOST_RULES: Array<[RegExp, string]> = [
@@ -42,6 +46,13 @@ const CLIENT_HOST_RULES: Array<[RegExp, string]> = [
   [/(^|\.)(chatgpt|openai)\.com$/, "chatgpt"],
   [/(^|\.)v0\.(app|dev)$/, "v0"],
 ];
+
+/**
+ * A generic HTTP library says nothing about the client, so it is checked
+ * last, after the client ID had its chance.
+ */
+const HTTP_LIBRARY =
+  /^(python-httpx2?|python-requests|aiohttp|undici|node|node-fetch|axios|Go-http-client|curl|okhttp|Java)\b/i;
 
 function clientIdUrl(clientId: unknown): URL | undefined {
   const isMetadataDocument =
@@ -56,34 +67,50 @@ function clientIdUrl(clientId: unknown): URL | undefined {
   }
 }
 
+function firstMatch(
+  rules: Array<[RegExp, string]>,
+  candidate: string | undefined,
+): string | undefined {
+  if (!candidate) {
+    return undefined;
+  }
+  for (const [pattern, name] of rules) {
+    if (pattern.test(candidate)) return name;
+  }
+  return undefined;
+}
+
 /**
  * Maps the user agent and OAuth client ID to a fixed client vocabulary.
- * Unknown clients are `other`; the raw user agent is never returned.
+ * Specific clients win over a generic HTTP library user agent. Unknown
+ * clients are `other`; the raw user agent is never returned.
  */
 export function mcpClientName(
   userAgent: string | null | undefined,
   clientId?: unknown,
 ): string {
-  const url = clientIdUrl(clientId);
-  const candidates: Array<string | undefined> = [];
+  let agent: string | undefined;
   if (typeof userAgent === "string") {
-    candidates.push(userAgent.slice(0, 256));
+    agent = userAgent.slice(0, 256);
   }
+  const url = clientIdUrl(clientId);
+  let metadataDocument: string | undefined;
   if (url) {
-    // The metadata path tells apart clients sharing a host (Codex on chatgpt.com).
-    candidates.push(`${url.hostname}${url.pathname}`);
+    // The path tells apart clients sharing a host (Codex on chatgpt.com).
+    metadataDocument = `${url.hostname}${url.pathname}`;
   }
 
-  for (const candidate of candidates) {
-    if (!candidate) continue;
-    for (const [pattern, name] of CLIENT_NAME_RULES) {
-      if (pattern.test(candidate)) return name;
-    }
+  const specificClient =
+    firstMatch(SPECIFIC_CLIENT_RULES, agent) ??
+    firstMatch(USER_AGENT_RULES, agent) ??
+    firstMatch(SPECIFIC_CLIENT_RULES, metadataDocument) ??
+    firstMatch(CLIENT_HOST_RULES, url?.hostname);
+  if (specificClient) {
+    return specificClient;
   }
-  if (url) {
-    for (const [pattern, name] of CLIENT_HOST_RULES) {
-      if (pattern.test(url.hostname)) return name;
-    }
+  const isHttpLibrary = agent !== undefined && HTTP_LIBRARY.test(agent);
+  if (isHttpLibrary) {
+    return "http-library";
   }
   return "other";
 }
@@ -158,23 +185,14 @@ const REQUEST_ERRORS = new Map<number, RequestErrorType>([
   [-32601, "not_found"], // Method not found
   [-32602, "invalid_request"], // Invalid params, and unknown tools and prompts
   [-32002, "not_found"], // Resource not found
+  [-32021, "invalid_request"], // Missing required client capability
+  [-32022, "invalid_request"], // Unsupported protocol version
   [-32011, "not_found"], // Event or subscription not found
   [-32012, "forbidden"],
   [-32013, "rate_limited"], // Subscription limit
   [-32014, "invalid_request"], // Unsupported event option
   [-32015, "invalid_request"], // Callback verification failed
 ]);
-
-/**
- * JSON-RPC errors that mean the caller sent a request the server could not
- * serve. The MCP semantic conventions say these SHOULD NOT mark a server span
- * as an error; every other code should.
- */
-const CALLER_ERROR_CODES = new Set([-32700, -32600, -32601, -32602, -32002]);
-
-export function isCallerErrorCode(code: unknown): boolean {
-  return typeof code === "number" && CALLER_ERROR_CODES.has(code);
-}
 
 /** Outcome and `error.type` of a message answered with a JSON-RPC error. */
 export function rpcErrorOutcome(code: unknown): MessageFailure {

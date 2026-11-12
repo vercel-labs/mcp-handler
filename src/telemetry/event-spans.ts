@@ -61,9 +61,11 @@ export function eventTypeAttributes(name: string): Attributes {
 /** A short `error.type` for a failed step; never the message. */
 function eventErrorType(error: unknown, signal?: AbortSignal): string {
   // The SDK aborts the request's signal with its own connection-closed error,
-  // which an adapter honoring the signal rethrows.
-  const isAbort = error instanceof Error && error.name === "AbortError";
-  if (isAbort || signal?.aborted) {
+  // which an adapter honoring the signal rethrows. Another error thrown after
+  // the client left is still the adapter's own.
+  const isAbortError = error instanceof Error && error.name === "AbortError";
+  const isAbortReason = signal?.aborted === true && error === signal.reason;
+  if (isAbortError || isAbortReason) {
     return "cancelled";
   }
   if (error instanceof ProtocolError) {
@@ -123,7 +125,9 @@ async function recordStep<T>(
         { kind: span.kind, startTime, attributes, links },
         parentContext,
       );
-      if (step.errorType) {
+      // Only the server's own failures are span errors, as on message spans:
+      // a missing subscription or a failed callback check is the caller's.
+      if (step.errorType === "internal_error") {
         written.setStatus({ code: SPAN_STATUS_ERROR });
       }
       written.end();

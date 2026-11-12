@@ -220,13 +220,14 @@ export function experimental_registerMcpEvents(
             : Math.max(minMs, Math.min(params.ttlMs ?? defaultMs, maxMs));
         const refreshBefore =
           ttl === null ? null : new Date(Date.now() + ttl).toISOString();
+        // Validated inside the step, so an invalid state shows as a failure.
         const state = await recordSubscriptionChange(
           telemetry,
           stepRequest,
           "subscribe",
           eventAttributes,
-          () =>
-            options.subscriptions.upsert(
+          async () => {
+            const stored = await options.subscriptions.upsert(
               {
                 ...key,
                 secret: params.delivery.secret,
@@ -238,12 +239,15 @@ export function experimental_registerMcpEvents(
               },
               auth,
               operationId,
-            ),
+            );
+            const result =
+              await subscriptionState["~standard"].validate(stored);
+            if (result.issues) throw new Error("Invalid subscription state");
+            return result.value;
+          },
           () => ({ outcome: "subscribed" }),
         );
-        const result = await subscriptionState["~standard"].validate(state);
-        if (result.issues) throw new Error("Invalid subscription state");
-        return { id: key.id, refreshBefore, ...result.value };
+        return { id: key.id, refreshBefore, ...state };
       }),
   );
 
