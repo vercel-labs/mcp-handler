@@ -30,12 +30,14 @@ export function register() {
 ```
 
 `registerMcpOTel` takes the same configuration as `registerOTel` from
-`@vercel/otel` 2.x. It removes the raw `User-Agent` and `Referer` from every
-span in the app, not only MCP spans. `@vercel/otel` is ESM-only, so loading `mcp-handler/otel` with
-`require` needs Node.js 20.19 or later; Next.js bundles `instrumentation.ts`,
-so the setup above is not affected. It names the service after the Vercel project, as Vercel's
+`@vercel/otel` 2.x. It names the service after the Vercel project, as Vercel's
 default tracing does, and removes the raw `User-Agent` and `Referer`
-attributes `@vercel/otel` adds to spans.
+attributes `@vercel/otel` adds to spans. The removal applies to every span in
+the app, not only MCP spans.
+
+`@vercel/otel` is ESM-only, so loading `mcp-handler/otel` with `require` needs
+Node.js 20.19+ or 22.12+. Next.js bundles `instrumentation.ts`, so the setup
+above is not affected.
 
 ### Upgrading from an app that already writes MCP spans
 
@@ -108,7 +110,8 @@ Vercel's counts follow your sampling rule.
 
 `mcp-handler` never records tool arguments, results, error messages, user IDs
 or raw user agents. Tool and prompt names are recorded only when the server
-answered with a result, so names a client invents never become attributes.
+answered with a result or a URL elicitation request, which only a registered
+tool or prompt can send, so names a client invents never become attributes.
 
 HTTP requests that never reach your server get no MCP span: a request
 rejected by `withMcpAuth`, and one the MCP SDK rejects first (an invalid

@@ -144,19 +144,22 @@ function isInputValidationError(content: unknown): boolean {
 }
 
 /**
- * Only a result proves a tool or prompt name is registered: the SDK answers an
- * unknown one with an error. Client-chosen names are unbounded, so they are
- * never recorded otherwise.
+ * Only a result, or a URL elicitation request, proves a tool or prompt name is
+ * registered: the SDK answers an unknown one with `-32602` before any handler
+ * runs, and only a registered handler can ask for a URL. Client-chosen names
+ * are unbounded, so they are never recorded otherwise.
  */
 function targetOf(
   message: InboundMessage,
   answer: Answer | "closed" | undefined,
 ): string | undefined {
-  const isResult =
-    typeof answer === "object" && answer !== null && "result" in answer;
+  const provesTarget =
+    typeof answer === "object" &&
+    answer !== null &&
+    ("result" in answer || answer.error?.code === URL_ELICITATION_REQUIRED);
   const namesTarget =
     message.method in TARGET_ATTRIBUTES && typeof message.name === "string";
-  if (isResult && namesTarget && !message.ambiguous) {
+  if (provesTarget && namesTarget && !message.ambiguous) {
     return message.name as string;
   }
   return undefined;

@@ -62,7 +62,8 @@ describe("message outcomes", () => {
     [
       "a URL elicitation request",
       { error: { code: -32042, message: "Open this URL" } },
-      { "vercel.rpc.outcome": "input_required" },
+      // Only a registered tool can ask for a URL, so its name is recorded.
+      { "vercel.rpc.outcome": "input_required", "gen_ai.tool.name": "deploy" },
     ],
     [
       "a missing client capability",
