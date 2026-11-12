@@ -44,9 +44,26 @@ type InboundMessage = {
   protocolVersion?: string;
   /** The client's trace, from `params._meta.traceparent`. */
   clientTrace?: SpanContext;
+  /** Why the tool failed, as the tool reported with `experimental_setToolOutcome`. */
+  reportedFailure?: ToolFailure;
   startTime: number;
   parentContext: unknown;
 };
+
+/** A failed tool call's outcome, as the tool itself classified it. */
+export type ToolFailure = {
+  outcome: "api_error" | "tool_error" | "execution_failure" | "request_error";
+  errorType: string;
+};
+
+/**
+ * Attaches a tool's own failure outcome to the pending call with this request
+ * ID. Returns `false` when there is no single such call.
+ */
+export type ToolFailureReporter = (
+  requestId: RequestId,
+  failure: ToolFailure,
+) => boolean;
 
 type Answer = Extract<JSONRPCMessage, { id: RequestId }> & {
   result?: {
@@ -67,9 +84,16 @@ const TARGET_ATTRIBUTES: Record<string, string> = {
 const PROTOCOL_VERSION_META_KEY = "io.modelcontextprotocol/protocolVersion";
 const MAX_REQUEST_ID_LENGTH = 128;
 type MessageOutcome = {
-  outcome: "success" | "input_required" | "request_error" | "execution_failure";
+  outcome: "success" | "input_required" | ToolFailure["outcome"];
   errorType?: string;
 };
+
+/** Outcomes that are the server's own failures, so the span is an error. */
+const SERVER_FAILURES = new Set<string>([
+  "execution_failure",
+  "api_error",
+  "tool_error",
+]);
 
 /** JSON-RPC `-32042`: the tool needs the user to open a URL first. */
 const URL_ELICITATION_REQUIRED = -32042;
@@ -79,10 +103,11 @@ const URL_ELICITATION_REQUIRED = -32042;
  * when the connection closed before one was sent, or none for a notification.
  */
 function outcomeOf(
-  method: string,
+  message: InboundMessage,
   answer: Answer | "closed" | undefined,
   clientAborted: boolean,
 ): MessageOutcome {
+  const { method } = message;
   if (answer === undefined) {
     return { outcome: "success" };
   }
@@ -112,6 +137,10 @@ function outcomeOf(
     method === "tools/call" && answer.result?.isError === true;
   if (!isFailedToolCall) {
     return { outcome: "success" };
+  }
+  // The tool knows why it failed better than its result text says.
+  if (message.reportedFailure) {
+    return message.reportedFailure;
   }
   if (isInputValidationError(answer.result?.content)) {
     return { outcome: "request_error", errorType: "invalid_request" };
@@ -209,11 +238,7 @@ function writeMessageSpan(
   message: InboundMessage,
   answer?: Answer | "closed",
 ): void {
-  const { outcome, errorType } = outcomeOf(
-    message.method,
-    answer,
-    clientAborted(),
-  );
+  const { outcome, errorType } = outcomeOf(message, answer, clientAborted());
 
   const target = targetOf(message, answer);
   const attributes: Attributes = {
@@ -250,7 +275,7 @@ function writeMessageSpan(
   // Only the server's own failures are span errors. A request the server
   // could not serve, invalid arguments and a client going away are the
   // caller's: Vercel still reports them as `request_error`.
-  const isServerError = outcome === "execution_failure";
+  const isServerError = SERVER_FAILURES.has(outcome);
 
   let name = message.method;
   if (target) {
@@ -314,18 +339,19 @@ export interface TracedServer {
 export function traceMcpMessages(
   server: McpServer,
   traced: TracedServer,
-): void {
+): ToolFailureReporter {
   const { tracing } = traced;
+  // Messages waiting for an answer, oldest first for each ID. Answers take
+  // them in order through a cursor rather than `shift()`, so a batch that
+  // repeats one ID stays linear. Replaced when the server connects.
+  let unanswered = new Map<
+    RequestId,
+    { messages: InboundMessage[]; next: number }
+  >();
   const connect = server.connect.bind(server);
   server.connect = async (transport) => {
     await connect(transport);
-    // Messages waiting for an answer, oldest first for each ID. Answers take
-    // them in order through a cursor rather than `shift()`, so a batch that
-    // repeats one ID stays linear.
-    const unanswered = new Map<
-      RequestId,
-      { messages: InboundMessage[]; next: number }
-    >();
+    unanswered = new Map();
     const { onmessage, onclose } = transport;
     const send = transport.send.bind(transport);
 
@@ -407,5 +433,16 @@ export function traceMcpMessages(
       unanswered.clear();
       onclose?.();
     };
+  };
+
+  return (requestId, failure) => {
+    const pending = unanswered.get(requestId);
+    // With two pending calls under one ID, the report can't be matched.
+    const isSingleCall = pending !== undefined && pending.messages.length === 1;
+    if (!isSingleCall) {
+      return false;
+    }
+    pending.messages[0].reportedFailure = failure;
+    return true;
   };
 }

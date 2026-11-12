@@ -1,11 +1,27 @@
 import type { McpRequestContext, McpServer } from "@modelcontextprotocol/server";
 import { mcpClientName, protocolVersion, VERCEL_RPC_ATTRIBUTES } from "./attributes";
 import type { EventTelemetry } from "./event-spans";
-import { traceMcpMessages } from "./message-spans";
+import { traceMcpMessages, type ToolFailureReporter } from "./message-spans";
 import { getMcpTracing, type Attributes } from "./otel-api";
 
 /** Instrumented servers, so MCP Events can write its spans with the same caller. */
 const instrumentedServers = new WeakMap<McpServer, EventTelemetry>();
+
+/**
+ * Failure reporters by HTTP request. A tool handler's `ctx.http.req` is the
+ * same `Request` the SDK hands the server factory, in both protocol eras.
+ */
+const failureReporters = new WeakMap<Request, ToolFailureReporter>();
+
+/** The failure reporter for the request a tool call came in on, if traced. */
+export function toolFailureReporterFor(
+  request: Request | undefined,
+): ToolFailureReporter | undefined {
+  if (!request) {
+    return undefined;
+  }
+  return failureReporters.get(request);
+}
 
 /** Options for the MCP spans `createMcpHandler` writes. */
 export interface McpTelemetryOptions {
@@ -61,11 +77,14 @@ export function instrumentMcpServer(
       return;
     }
     const caller = callerAttributes(ctx, route);
-    traceMcpMessages(server, {
+    const reportFailure = traceMcpMessages(server, {
       tracing,
       callerAttributes: caller,
       clientAborted: () => ctx.requestInfo?.signal?.aborted === true,
     });
+    if (ctx.requestInfo) {
+      failureReporters.set(ctx.requestInfo, reportFailure);
+    }
     instrumentedServers.set(server, {
       tracing,
       attributes: {
