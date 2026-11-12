@@ -14,6 +14,13 @@ import {
   createWebMcpScriptHandler,
   type WebMcpScriptHandlerOptions,
 } from "../webmcp/script-handler";
+import {
+  DEFAULT_TELEMETRY_ROUTE,
+  instrumentMcpServer,
+  type McpTelemetryOptions,
+} from "../telemetry";
+
+export type { McpTelemetryOptions };
 
 export type WebMcpOptions = Omit<WebMcpScriptHandlerOptions, "endpoint">;
 
@@ -53,6 +60,14 @@ export type McpHandlerOptions = McpServerOptions & {
    * @experimental WebMCP is an early-stage browser API.
    */
   experimental_webMcp?: WebMcpOptions;
+  /**
+   * OpenTelemetry spans for Vercel's MCP observability: one `SERVER` span per
+   * MCP request or notification, following the OpenTelemetry MCP semantic
+   * conventions. Spans are written only when the app registers a tracer
+   * provider, for example with `registerMcpOTel()` from `mcp-handler/otel`.
+   * Set to `false` to write none.
+   */
+  telemetry?: false | McpTelemetryOptions;
 };
 
 export function initializeMcpApiHandler(
@@ -70,8 +85,14 @@ export function initializeMcpApiHandler(
     onEvent,
     maxSubscriptions,
     experimental_webMcp,
+    telemetry,
     ...mcpServerOptions
   } = options;
+
+  let telemetryRoute: string | undefined;
+  if (telemetry !== false) {
+    telemetryRoute = telemetry?.route ?? DEFAULT_TELEMETRY_ROUTE;
+  }
 
   // Validate WebMCP configuration when the handler is created rather than on
   // the first request. The real endpoint is inferred from the script request.
@@ -101,8 +122,11 @@ export function initializeMcpApiHandler(
   // 2025-era Streamable HTTP clients. A fresh McpServer is constructed per
   // request via the factory.
   const sdkHandler = createSdkMcpHandler(
-    async () => {
+    async (ctx) => {
       const server = new McpServer(serverInfo, mcpServerOptions);
+      if (telemetryRoute !== undefined) {
+        instrumentMcpServer(server, ctx, telemetryRoute);
+      }
       await initializeServer(server);
       return server;
     },
