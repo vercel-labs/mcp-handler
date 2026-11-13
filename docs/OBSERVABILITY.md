@@ -103,11 +103,24 @@ swapped.
 
 When a request carries the client's trace in `params._meta` (the W3C
 `traceparent` and `tracestate` keys SEP-414 defines), the message span and its
-MCP Events spans link it, and keep the HTTP request as their parent. The MCP
-semantic conventions suggest the client's trace as the parent instead, but
-then a client could make your server record spans your own sampling would
-drop. As a link, a span is recorded exactly when the request is sampled, so
-Vercel's counts follow your sampling rule.
+MCP Events spans link it, and keep the HTTP request as their parent. This is
+the only behavior; it isn't configurable.
+
+The MCP semantic conventions suggest the client's trace as the parent by
+default. `mcp-handler` doesn't follow that default because:
+
+- A client could make your server record spans your own sampling would drop,
+  or drop spans your sampling would keep. As a link, a span is recorded exactly
+  when the request is sampled, so Vercel's counts follow your sampling rule.
+- The client's own spans are exported to the client's backend, not yours. On
+  the client's trace, your span has a parent you never receive, so your trace
+  view shows it as a fragment without a root, cut off from the request that
+  served it.
+- Your spans keep trace IDs your platform chose, so a client can't place them
+  in a trace of its choosing or collide with your traces.
+
+To find a call from the client's side, follow the span's link, or log the
+client's trace ID from `params._meta` next to your own trace ID.
 
 `mcp-handler` never records tool arguments, results, error messages, user IDs
 or raw user agents. Tool and prompt names are recorded only when the server
