@@ -105,19 +105,17 @@ const URL_ELICITATION_REQUIRED = -32042;
 function outcomeOf(
   message: InboundMessage,
   answer: Answer | "closed" | undefined,
-  clientAborted: boolean,
 ): MessageOutcome {
   const { method } = message;
   if (answer === undefined) {
     return { outcome: "success" };
   }
   if (answer === "closed") {
-    // Only the client going away is a cancellation; a close the server starts
-    // (a failure or a shutdown) is the server's.
-    if (clientAborted) {
-      return { outcome: "request_error", errorType: "cancelled" };
-    }
-    return { outcome: "execution_failure", errorType: "internal_error" };
+    // `mcp-handler` never closes a transport with requests still waiting, so a
+    // close before the answer is the client going away: an aborted request, or
+    // a response stream it cancelled without aborting. A server that crashes
+    // or times out writes no span at all.
+    return { outcome: "request_error", errorType: "cancelled" };
   }
   if (answer.error) {
     // A tool waiting on the user is not a failure, as with `input_required`.
@@ -234,11 +232,11 @@ function recordMessageSpan(
 }
 
 function writeMessageSpan(
-  { tracing, callerAttributes, clientAborted }: TracedServer,
+  { tracing, callerAttributes }: TracedServer,
   message: InboundMessage,
   answer?: Answer | "closed",
 ): void {
-  const { outcome, errorType } = outcomeOf(message, answer, clientAborted());
+  const { outcome, errorType } = outcomeOf(message, answer);
 
   const target = targetOf(message, answer);
   const attributes: Attributes = {
@@ -327,8 +325,6 @@ export interface TracedServer {
   tracing: McpTracing;
   /** What the handler knows about the caller: route, client and auth outcome. */
   callerAttributes: Attributes;
-  /** Whether the client went away, as opposed to the server closing. */
-  clientAborted: () => boolean;
 }
 
 /**
