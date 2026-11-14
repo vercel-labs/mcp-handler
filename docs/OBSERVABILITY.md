@@ -82,8 +82,10 @@ Every MCP message gets one `SERVER` span named `{method}`, or
 A JSON-RPC parse, request, method or params error (including an unknown tool
 or prompt), a missing client capability, an unsupported protocol version,
 tool arguments that fail the tool's input schema, and a request the client
-cancelled are `request_error`s. A request still pending when the server closes
-the connection itself is an `execution_failure`.
+cancelled are `request_error`s. A request still pending when the connection
+closes is `cancelled` too, whether the client aborted the request or only
+cancelled the response stream; `mcp-handler` never closes a connection with a
+request still waiting.
 
 A tool, prompt or resource that needs more input from the user
 (`input_required` on 2026-07-28, or a URL elicitation) is `input_required`,
