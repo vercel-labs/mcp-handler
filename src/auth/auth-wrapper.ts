@@ -23,6 +23,7 @@ export function withMcpAuth(
     resourceMetadataPath = "/.well-known/oauth-protected-resource",
     requiredScopes,
     resourceUrl,
+    logAuthErrors = "name",
   }: {
     required?: boolean;
     resourceMetadataPath?: string;
@@ -42,6 +43,13 @@ export function withMcpAuth(
      * (X-Forwarded-Host, X-Forwarded-Proto, Forwarded) or falls back to req.url.
      */
     resourceUrl?: string;
+    /**
+     * What to log when authentication fails with an error that isn't an
+     * `OAuthError`, such as a database error thrown by `verifyToken`.
+     * `"name"` (default) logs only the error name, `"full"` logs the error
+     * object, and `"none"` logs nothing. The response is the same in all cases.
+     */
+    logAuthErrors?: "name" | "full" | "none";
   } = {},
 ) {
   return async (req: Request) => {
@@ -63,7 +71,7 @@ export function withMcpAuth(
       if (OAuthError.isInstance(error)) {
         return bearerAuthChallengeResponse(error, challengeOptions);
       }
-      console.error("Unexpected error authenticating bearer token:", error);
+      logAuthError(error, logAuthErrors);
       return bearerAuthChallengeResponse(
         new OAuthError(OAuthErrorCode.InvalidToken, "Invalid token"),
         challengeOptions,
@@ -110,7 +118,7 @@ export function withMcpAuth(
       return handler(req);
     } catch (error) {
       if (!OAuthError.isInstance(error)) {
-        console.error("Unexpected error authenticating bearer token:", error);
+        logAuthError(error, logAuthErrors);
       }
       // Maps invalid_token → 401, insufficient_scope → 403 (both with a
       // WWW-Authenticate challenge advertising scopes and resource_metadata),
@@ -118,4 +126,19 @@ export function withMcpAuth(
       return bearerAuthChallengeResponse(error, challengeOptions);
     }
   };
+}
+
+// Errors from a verifier's database or identity provider can carry hosts,
+// queries or credentials in their message, so only the name is logged by
+// default.
+function logAuthError(error: unknown, mode: "name" | "full" | "none") {
+  if (mode === "none") return;
+  console.error(
+    "Unexpected error authenticating bearer token:",
+    mode === "full" ? error : describeError(error),
+  );
+}
+
+function describeError(error: unknown) {
+  return { name: error instanceof Error ? error.name : typeof error };
 }

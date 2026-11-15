@@ -143,6 +143,10 @@ The path should match `resourceMetadataPath` in your `withMcpAuth` config (defau
 5. If required scopes are missing from a valid token → 403 response
 6. On success, auth info is available via `ctx.http?.authInfo` in tool handlers
 
+## Logging unexpected errors
+
+If `verifyToken` throws an error that isn't an `OAuthError`, `withMcpAuth` answers with a 401 and logs only the error name, for example `{ name: "Error" }`, so a database or identity provider message doesn't reach your platform logs. Set `logAuthErrors: "full"` to log the whole error while debugging, or `logAuthErrors: "none"` to turn the log off. The response is the same in every mode.
+
 ## Step-up authorization
 
 `withMcpAuth` includes the configured `requiredScopes` in the `WWW-Authenticate`

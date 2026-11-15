@@ -114,9 +114,11 @@ describe("withMcpAuth authorization challenges", () => {
     },
   );
 
-  it("logs untyped token verification errors and returns 401", async () => {
+  it("logs only the name of untyped token verification errors and returns 401", async () => {
     const log = vi.spyOn(console, "error").mockImplementation(() => {});
-    const failure = new Error("connection to db failed");
+    const failure = new Error(
+      "connection to db-host-1 failed: password authentication failed",
+    );
     const handler = withMcpAuth(
       () => new Response("ok"),
       async () => {
@@ -128,11 +130,103 @@ describe("withMcpAuth authorization challenges", () => {
     const response = await handler(new Request(endpoint));
 
     expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({
+      error: "invalid_token",
+      error_description: "Invalid token",
+    });
+    expect(log).toHaveBeenCalledExactlyOnceWith(
+      "Unexpected error authenticating bearer token:",
+      { name: "Error" },
+    );
+    const logged = JSON.stringify(log.mock.calls);
+    expect(logged).not.toContain("db-host-1");
+    expect(logged).not.toContain(failure.stack);
+  });
+
+  it("logs the full error when logAuthErrors is full", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const failure = new Error("connection to db-host-1 failed");
+    const handler = withMcpAuth(
+      () => new Response("ok"),
+      async () => {
+        throw failure;
+      },
+      { required: true, logAuthErrors: "full" },
+    );
+
+    const response = await handler(new Request(endpoint));
+
+    expect(response.status).toBe(401);
     expect(log).toHaveBeenCalledExactlyOnceWith(
       "Unexpected error authenticating bearer token:",
       failure,
     );
   });
+
+  it("does not log when logAuthErrors is none", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const handler = withMcpAuth(
+      () => new Response("ok"),
+      async () => {
+        throw new Error("connection to db-host-1 failed");
+      },
+      { required: true, logAuthErrors: "none" },
+    );
+
+    const response = await handler(new Request(endpoint));
+
+    expect(response.status).toBe(401);
+    expect(log).not.toHaveBeenCalled();
+  });
+
+  it("logs the type of a non-Error thrown by token verification", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const handler = withMcpAuth(
+      () => new Response("ok"),
+      async () => {
+        throw "db-host-1 unreachable";
+      },
+      { required: true },
+    );
+
+    const response = await handler(new Request(endpoint));
+
+    expect(response.status).toBe(401);
+    expect(log).toHaveBeenCalledExactlyOnceWith(
+      "Unexpected error authenticating bearer token:",
+      { name: "string" },
+    );
+  });
+
+  it.each([
+    {
+      logAuthErrors: undefined,
+      calls: [
+        [
+          "Unexpected error authenticating bearer token:",
+          { name: "TypeError" },
+        ],
+      ],
+    },
+    { logAuthErrors: "none" as const, calls: [] },
+  ])(
+    "applies logAuthErrors=$logAuthErrors to unexpected errors after verification",
+    async ({ logAuthErrors, calls }) => {
+      const log = vi.spyOn(console, "error").mockImplementation(() => {});
+      const handler = withMcpAuth(
+        () => {
+          throw new TypeError("connection to db-host-1 failed");
+        },
+        async () => authInfo(),
+        { logAuthErrors },
+      );
+
+      const response = await handler(new Request(endpoint));
+
+      expect(response.status).toBe(500);
+      expect(log.mock.calls).toEqual(calls);
+    },
+  );
 
   it.each([undefined, []])(
     "omits scope when requiredScopes is %j",
