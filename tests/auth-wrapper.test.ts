@@ -139,7 +139,10 @@ describe("withMcpAuth authorization challenges", () => {
       "Unexpected error authenticating bearer token:",
       { name: "Error" },
     );
-    const logged = inspect(log.mock.calls, { depth: null });
+    const logged = log.mock.calls
+      .flat()
+      .map((arg) => inspect(arg, { depth: null }))
+      .join("\n");
     expect(logged).not.toContain("db-host-1");
     expect(logged).not.toContain(failure.stack);
   });
