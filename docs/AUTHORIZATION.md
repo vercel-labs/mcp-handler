@@ -147,6 +147,8 @@ The path should match `resourceMetadataPath` in your `withMcpAuth` config (defau
 
 If `verifyToken` throws an error that isn't an `OAuthError`, `withMcpAuth` answers with a 401 and logs only the error name, for example `{ name: "Error" }`, so a database or identity provider message doesn't reach your platform logs. Set `logAuthErrors: "full"` to log the whole error while debugging, or `logAuthErrors: "none"` to turn the log off. The response is the same in every mode.
 
+The same option applies to unexpected errors after verification, such as a synchronous throw from your handler, which `withMcpAuth` answers with a 500.
+
 ## Step-up authorization
 
 `withMcpAuth` includes the configured `requiredScopes` in the `WWW-Authenticate`

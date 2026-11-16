@@ -44,10 +44,12 @@ export function withMcpAuth(
      */
     resourceUrl?: string;
     /**
-     * What to log when authentication fails with an error that isn't an
-     * `OAuthError`, such as a database error thrown by `verifyToken`.
-     * `"name"` (default) logs only the error name, `"full"` logs the error
+     * What to log for an error that isn't an `OAuthError`: one thrown by
+     * `verifyToken` (answered with a 401), or an unexpected error after
+     * verification, including a synchronous throw from `handler` (answered
+     * with a 500). `"name"` logs only the error name, `"full"` logs the error
      * object, and `"none"` logs nothing. The response is the same in all cases.
+     * @default "name"
      */
     logAuthErrors?: "name" | "full" | "none";
   } = {},
