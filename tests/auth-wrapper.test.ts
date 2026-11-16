@@ -1,3 +1,4 @@
+import { inspect } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AuthInfo } from "@modelcontextprotocol/server";
 import { OAuthError, OAuthErrorCode } from "@modelcontextprotocol/server";
@@ -138,7 +139,7 @@ describe("withMcpAuth authorization challenges", () => {
       "Unexpected error authenticating bearer token:",
       { name: "Error" },
     );
-    const logged = JSON.stringify(log.mock.calls);
+    const logged = inspect(log.mock.calls, { depth: null });
     expect(logged).not.toContain("db-host-1");
     expect(logged).not.toContain(failure.stack);
   });
@@ -205,6 +206,15 @@ describe("withMcpAuth authorization challenges", () => {
         [
           "Unexpected error authenticating bearer token:",
           { name: "TypeError" },
+        ],
+      ],
+    },
+    {
+      logAuthErrors: "full" as const,
+      calls: [
+        [
+          "Unexpected error authenticating bearer token:",
+          expect.any(TypeError),
         ],
       ],
     },
