@@ -184,12 +184,17 @@ export function experimental_registerMcpEvents(
           stepRequest,
           "prepare",
           eventAttributes,
-          () => options.subscriptions.prepare(key, auth),
+          async () => {
+            const id = await options.subscriptions.prepare(key, auth);
+            // Checked inside the step, so a store returning no operation
+            // fails the prepare span instead of recording it as prepared.
+            if (typeof id !== "string" || !id.trim()) {
+              throw new Error("Invalid subscription operation");
+            }
+            return id;
+          },
           () => ({ outcome: "prepared" }),
         );
-        if (typeof operationId !== "string" || !operationId.trim()) {
-          throw new Error("Invalid subscription operation");
-        }
         auth.signal.throwIfAborted();
         const verification = await recordCallbackVerification(
           telemetry,

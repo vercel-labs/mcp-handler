@@ -26,7 +26,7 @@ type FakeTransport = {
 
 /** A traced server on a fake transport, to answer messages by hand. */
 async function tracedTransport(
-  options: { clientAborted?: boolean; throwOnMessage?: boolean } = {},
+  options: { throwOnMessage?: boolean } = {},
 ) {
   const transport: FakeTransport = { send: async () => {} };
   const server = {
@@ -40,7 +40,6 @@ async function tracedTransport(
   traceMcpMessages(server, {
     tracing: getMcpTracing()!,
     callerAttributes: {},
-    clientAborted: () => options.clientAborted === true,
   });
   await server.connect(transport as never);
   return transport;
@@ -105,24 +104,18 @@ describe("message outcomes", () => {
     expect(span.status.code).toBe(SpanStatusCode.UNSET);
   });
 
-  it.each([
-    [true, "request_error", "cancelled", SpanStatusCode.UNSET],
-    [false, "execution_failure", "internal_error", SpanStatusCode.ERROR],
-  ])(
-    "records a close with the client aborted=%s as %s",
-    async (clientAborted, outcome, errorType, status) => {
-      const transport = await tracedTransport({ clientAborted });
-      transport.onmessage!({ jsonrpc: "2.0", id: 1, method: "tools/list" });
-      transport.onclose!();
+  it("records a close before the answer as cancelled, not a server error", async () => {
+    const transport = await tracedTransport();
+    transport.onmessage!({ jsonrpc: "2.0", id: 1, method: "tools/list" });
+    transport.onclose!();
 
-      const span = onlySpan();
-      expect(span.attributes).toMatchObject({
-        "vercel.rpc.outcome": outcome,
-        "error.type": errorType,
-      });
-      expect(span.status.code).toBe(status);
-    },
-  );
+    const span = onlySpan();
+    expect(span.attributes).toMatchObject({
+      "vercel.rpc.outcome": "request_error",
+      "error.type": "cancelled",
+    });
+    expect(span.status.code).toBe(SpanStatusCode.UNSET);
+  });
 
   it("still records a notification whose handler throws", async () => {
     const transport = await tracedTransport({ throwOnMessage: true });

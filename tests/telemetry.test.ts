@@ -218,6 +218,30 @@ describe("MCP message spans", () => {
     expect(span.status.code).toBe(SpanStatusCode.UNSET);
   });
 
+  it("records a response stream the client cancelled without aborting as cancelled", async () => {
+    const response = await handlerWith()(
+      new Request("https://example.com/api/mcp", {
+        method: "POST",
+        headers: {
+          accept: "application/json, text/event-stream",
+          "content-type": "application/json",
+          "mcp-protocol-version": "2025-06-18",
+        },
+        body: JSON.stringify(message("tools/call", { name: "slow", arguments: {} })),
+      }),
+    );
+    // No abort signal: only the response body goes away.
+    await response.body?.cancel().catch(() => undefined);
+    await vi.waitFor(() => expect(mcpSpans()).toHaveLength(1), { timeout: 500 });
+
+    const [span] = mcpSpans();
+    expect(span.attributes).toMatchObject({
+      "vercel.rpc.outcome": "request_error",
+      "error.type": "cancelled",
+    });
+    expect(span.status.code).toBe(SpanStatusCode.UNSET);
+  });
+
   it("records the protocol version initialize negotiated, not the proposed one", async () => {
     const response = await handlerWith()(
       legacyRequest(

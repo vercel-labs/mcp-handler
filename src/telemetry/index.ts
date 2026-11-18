@@ -100,7 +100,6 @@ export function instrumentMcpServer(
     const reportFailure = traceMcpMessages(server, {
       tracing,
       callerAttributes: caller,
-      clientAborted: () => ctx.requestInfo?.signal?.aborted === true,
     });
     if (ctx.requestInfo) {
       telemetryRegistry().failureReporters.set(ctx.requestInfo, reportFailure);

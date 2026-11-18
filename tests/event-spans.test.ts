@@ -175,6 +175,22 @@ describe("MCP Events spans", () => {
     expect(JSON.stringify(span.attributes)).not.toContain("team_secret");
   });
 
+  it("fails the prepare span when the store returns no operation", async () => {
+    const prepare = vi.fn(async () => "  ");
+
+    await setup({ prepare })("events/subscribe", subscribeParams);
+
+    const spans = eventSpans();
+    expect(spans.map((span) => span.name)).toEqual([
+      "mcp.event.subscription prepare",
+    ]);
+    expect(spans[0].attributes).toMatchObject({ "error.type": "internal_error" });
+    expect(spans[0].attributes).not.toHaveProperty(
+      "vercel.mcp.subscription.outcome",
+    );
+    expect(spans[0].status.code).toBe(SpanStatusCode.ERROR);
+  });
+
   it("records an unsubscribe without the unchecked event name", async () => {
     await setup()("events/unsubscribe", {
       name: "issue.created",
