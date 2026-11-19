@@ -30,6 +30,22 @@ describe("createMcpHandler WebMCP option", () => {
     expect(script).toContain('"credentials":"same-origin"');
   });
 
+  it("embeds the public endpoint URL when behind a proxy", async () => {
+    const handler = createMcpHandler(() => {}, {
+      experimental_webMcp: { tools: ["echo"] },
+    });
+    const res = await handler(
+      new Request("http://localhost:3000/api/mcp?webmcp-script&v=1", {
+        headers: {
+          "x-forwarded-host": "example.com",
+          "x-forwarded-proto": "https",
+        },
+      }),
+    );
+    const script = await res.text();
+    expect(script).toContain('"endpoint":"https://example.com/api/mcp?v=1"');
+  });
+
   it("escapes config so it cannot break out of an inline script tag", async () => {
     const handler = createMcpHandler(() => {}, {
       experimental_webMcp: {
