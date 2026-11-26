@@ -65,7 +65,6 @@ const RUNTIME_RULES: Array<[RegExp, string]> = [
   [/^zig\b/i, "zig"],
   [/^curl\b/i, "curl"],
   [/^(okhttp|Java)\b/i, "java"],
-  [/^Mozilla\b/i, "browser"],
 ];
 
 function clientIdUrl(clientId: unknown): URL | undefined {

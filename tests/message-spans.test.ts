@@ -151,8 +151,8 @@ describe("mcpClientName", () => {
     ["omp/19.2.0", undefined, "omp"],
     ["Devin-MCP-Client/1.0", undefined, "devin"],
     ["Perplexity-MCP/1.0", undefined, "perplexity"],
-    ["Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)", undefined, "browser"],
-    ["tns-csq/0.1", undefined, "other"],
+    ["Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)", undefined, "other"],
+    ["acme-agent/0.1", undefined, "other"],
     ["", undefined, "other"],
     [null, undefined, "other"],
   ])("names %s with client ID %s as %s", (userAgent, clientId, name) => {
