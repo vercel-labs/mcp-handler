@@ -29,6 +29,8 @@ const SPECIFIC_CLIENT_RULES: Array<[RegExp, string]> = [
   [/gemini/i, "gemini"],
   [/grok/i, "grok"],
   [/hermes-agent|nousresearch/i, "hermes"],
+  [/opencode/i, "opencode"],
+  [/perplexity/i, "perplexity"],
   [/mcp-inspector|modelcontextprotocol\/inspector/i, "mcp-inspector"],
 ];
 
@@ -39,6 +41,8 @@ const USER_AGENT_RULES: Array<[RegExp, string]> = [
   [/^Cursor\b/i, "cursor"],
   [/^Muse\b/i, "muse"],
   [/^v0\b/i, "v0"],
+  [/^Devin\b/i, "devin"],
+  [/^omp\b/i, "omp"],
 ];
 
 const CLIENT_HOST_RULES: Array<[RegExp, string]> = [
@@ -48,11 +52,20 @@ const CLIENT_HOST_RULES: Array<[RegExp, string]> = [
 ];
 
 /**
- * A generic HTTP library says nothing about the client, so it is checked
- * last, after the client ID had its chance.
+ * An SDK or language runtime names what made the request, not the product
+ * built on it, so these are checked last, after the client ID had its chance.
  */
-const HTTP_LIBRARY =
-  /^(python-httpx2?|python-requests|aiohttp|undici|node|node-fetch|axios|Go-http-client|curl|okhttp|Java)\b/i;
+const RUNTIME_RULES: Array<[RegExp, string]> = [
+  [/^ai-sdk\b/i, "ai-sdk"],
+  [/^(node|undici|node-fetch|axios)\b/i, "node"],
+  [/^(python-httpx2?|python-requests|python-urllib|aiohttp)\b/i, "python"],
+  [/^Go-http-client\b/i, "go"],
+  [/^Bun\b/i, "bun"],
+  [/^Deno\b/i, "deno"],
+  [/^zig\b/i, "zig"],
+  [/^curl\b/i, "curl"],
+  [/^(okhttp|Java)\b/i, "java"],
+];
 
 function clientIdUrl(clientId: unknown): URL | undefined {
   const isMetadataDocument =
@@ -82,8 +95,8 @@ function firstMatch(
 
 /**
  * Maps the user agent and OAuth client ID to a fixed client vocabulary.
- * Specific clients win over a generic HTTP library user agent. Unknown
- * clients are `other`; the raw user agent is never returned.
+ * Specific clients win over an SDK or runtime user agent. Unknown clients are
+ * `other`; the raw user agent is never returned.
  */
 export function mcpClientName(
   userAgent: string | null | undefined,
@@ -100,19 +113,14 @@ export function mcpClientName(
     metadataDocument = `${url.hostname}${url.pathname}`;
   }
 
-  const specificClient =
+  return (
     firstMatch(SPECIFIC_CLIENT_RULES, agent) ??
     firstMatch(USER_AGENT_RULES, agent) ??
     firstMatch(SPECIFIC_CLIENT_RULES, metadataDocument) ??
-    firstMatch(CLIENT_HOST_RULES, url?.hostname);
-  if (specificClient) {
-    return specificClient;
-  }
-  const isHttpLibrary = agent !== undefined && HTTP_LIBRARY.test(agent);
-  if (isHttpLibrary) {
-    return "http-library";
-  }
-  return "other";
+    firstMatch(CLIENT_HOST_RULES, url?.hostname) ??
+    firstMatch(RUNTIME_RULES, agent) ??
+    "other"
+  );
 }
 
 const MCP_METHODS = new Set([
