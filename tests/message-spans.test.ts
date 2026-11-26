@@ -139,7 +139,22 @@ describe("mcpClientName", () => {
     [undefined, "https://curl.example.org/client.json", "other"],
     ["Claude-User", undefined, "claude"],
     ["claude-code/2.1.0", "https://example.com/client.json", "claude-code"],
-    ["node", undefined, "http-library"],
+    ["node", undefined, "node"],
+    ["undici", undefined, "node"],
+    ["Go-http-client/2.0", undefined, "go"],
+    ["Python-urllib/3.13", undefined, "python"],
+    ["zig/0.17.1 (std.http)", undefined, "zig"],
+    ["Bun/1.4.4", undefined, "bun"],
+    ["ai-sdk/2.0.69 node.js/24", undefined, "ai-sdk"],
+    ["ai-sdk/2.0.69 node.js/24", "https://claude.ai/oauth/client.json", "claude"],
+    ["opencode/latest/2.4.1/cli", undefined, "opencode"],
+    ["omp/19.2.0", undefined, "omp"],
+    ["Devin-MCP-Client/1.0", undefined, "devin"],
+    ["Perplexity-MCP/1.0", undefined, "perplexity"],
+    ["Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)", undefined, "browser"],
+    ["tns-csq/0.1", undefined, "other"],
+    ["", undefined, "other"],
+    [null, undefined, "other"],
   ])("names %s with client ID %s as %s", (userAgent, clientId, name) => {
     expect(mcpClientName(userAgent, clientId)).toBe(name);
   });

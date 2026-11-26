@@ -73,7 +73,7 @@ Every MCP message gets one `SERVER` span named `{method}`, or
 | `jsonrpc.request.id`      | The request ID; absent on notifications                                                          |
 | `mcp.protocol.version`    | The negotiated protocol revision, when known                                                     |
 | `vercel.rpc.outcome`      | `success`, `input_required`, `request_error`, `execution_failure`, or what the tool reported (`api_error`, `tool_error`) |
-| `vercel.rpc.client.name`  | A fixed client vocabulary (`claude`, `cursor`, `codex`, …, `other`) from the user agent and OAuth client ID |
+| `vercel.rpc.client.name`  | A fixed client vocabulary from the user agent and OAuth client ID: a known client (`claude`, `cursor`, `codex`, `opencode`, …), else the SDK or runtime that made the request (`ai-sdk`, `node`, `python`, `go`, …), else `other` |
 | `vercel.rpc.route`        | The `telemetry.route` option, `mcp` by default                                                   |
 | `vercel.rpc.auth.outcome` | `authorized` with a token verified by `withMcpAuth`, otherwise `anonymous`                       |
 | `error.type`              | On failure: `invalid_request`, `not_found`, `forbidden`, `rate_limited`, `cancelled` or `internal_error` |
